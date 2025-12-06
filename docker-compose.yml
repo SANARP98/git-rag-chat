@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: git-rag-chromadb
+    ports:
+      - "${CHROMA_PORT:-8000}:8000"
+    volumes:
+      - ./data/chroma:/chroma/data
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  rag-pipeline:
+    build:
+      context: ./services/rag-pipeline
+      dockerfile: Dockerfile
+    container_name: git-rag-pipeline
+    ports:
+      - "${RAG_PIPELINE_PORT:-8001}:8001"
+    volumes:
+      - ./data/metadata:/app/data/metadata
+      - ./data/models:/app/data/models
+      - ${REPO_MOUNT_PATH:-/tmp}:/repos:ro  # Mount Git repo read-only
+    environment:
+      - CHROMA_HOST=${CHROMA_HOST:-chromadb}
+      - CHROMA_PORT=${CHROMA_PORT:-8000}
+      - LLM_PROVIDER=${LLM_PROVIDER:-codex}
+      - CODEX_PROFILE=${CODEX_PROFILE:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-coder:33b}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - METADATA_DB_PATH=${METADATA_DB_PATH:-/app/data/metadata/repos.db}
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+  file-watcher:
+    build:
+      context: ./services/file-watcher
+      dockerfile: Dockerfile
+    container_name: git-rag-watcher
+    volumes:
+      - ${REPO_MOUNT_PATH:-/tmp}:/repos
+    environment:
+      - REPO_PATH=/repos
+      - REPO_ID=${REPO_ID:-}
+      - RAG_API_URL=http://rag-pipeline:8001
+      - DEBOUNCE_SECONDS=${DEBOUNCE_SECONDS:-2}
+      - POLL_INTERVAL=${POLL_INTERVAL:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - rag-pipeline
+    networks:
+      - rag-network
+    restart: unless-stopped
+    profiles:
+      - watcher  # Only start with: docker-compose --profile watcher up
+
+  web-ui:
+    build:
+      context: ./services/web-ui
+      dockerfile: Dockerfile
+    container_name: git-rag-ui
+    ports:
+      - "${GRADIO_SERVER_PORT:-7860}:7860"
+    environment:
+      - RAG_PIPELINE_URL=http://rag-pipeline:8001
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      - GRADIO_ALLOWED_PATHS=${GRADIO_ALLOWED_PATHS:-/Users,/home}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - rag-pipeline
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+  # Optional: Ollama for offline LLM capability
+  ollama:
+    image: ollama/ollama:latest
+    container_name: git-rag-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    networks:
+      - rag-network
+    profiles:
+      - offline  # Only start with: docker-compose --profile offline up
+    restart: unless-stopped
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  chroma-data:
+  metadata-db:
+  models-cache:
+  ollama-data:

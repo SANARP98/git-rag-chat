@@ -1,0 +1,11 @@
+# File system monitoring
+watchdog==3.0.0
+
+# Git operations
+GitPython==3.1.40
+
+# HTTP client
+httpx==0.25.2
+
+# Utilities
+python-dotenv==1.0.0

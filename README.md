@@ -67,7 +67,24 @@ A Docker-based RAG (Retrieval-Augmented Generation) chatbot system that tracks G
 - ✅ Query endpoint with LLM generation
 - ✅ Chat-based and prompt-based APIs
 
-### 📅 Next Steps: Phase 7-8
+**Phase 7** (Web UI with Gradio):
+
+- ✅ Gradio-based web interface
+- ✅ Chat interface with message history and code syntax highlighting
+- ✅ Repository directory picker with real-time Git validation
+- ✅ Repository management panel (add/switch repos)
+- ✅ Indexing status display
+- ✅ Settings and help documentation
+- ✅ Dockerized web-ui service
+
+### 📅 Next Steps: Phase 8
+
+**Phase 8** (Testing & Polish):
+
+- Unit tests for critical components
+- Integration tests for end-to-end flow
+- Performance optimization
+- Documentation improvements
 
 See the [implementation plan](.claude/plans/golden-popping-iverson.md) for full details.
 

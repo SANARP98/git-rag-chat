@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(curl:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker-compose stop:*)",
+      "Bash(python3:*)",
+      "Bash(docker logs:*)",
+      "Bash(timeout 5 curl:*)",
+      "Bash(pip3 install:*)",
+      "Bash(tee:*)",
+      "Bash(docker-compose rm:*)",
+      "Bash(docker-compose restart:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

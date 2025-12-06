@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.4.24
     container_name: git-rag-chromadb
     ports:
       - "${CHROMA_PORT:-8000}:8000"
@@ -13,11 +13,6 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE
     networks:
       - rag-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
     restart: unless-stopped
 
   rag-pipeline:
@@ -31,6 +26,7 @@ services:
       - ./data/metadata:/app/data/metadata
       - ./data/models:/app/data/models
       - ${REPO_MOUNT_PATH:-/tmp}:/repos:ro  # Mount Git repo read-only
+      - /Users/sana/Documents:/host/Documents:ro  # Mount entire Documents folder (optional)
     environment:
       - CHROMA_HOST=${CHROMA_HOST:-chromadb}
       - CHROMA_PORT=${CHROMA_PORT:-8000}
@@ -42,8 +38,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - METADATA_DB_PATH=${METADATA_DB_PATH:-/app/data/metadata/repos.db}
     depends_on:
-      chromadb:
-        condition: service_healthy
+      - chromadb
     networks:
       - rag-network
     restart: unless-stopped
@@ -78,7 +73,7 @@ services:
     ports:
       - "${GRADIO_SERVER_PORT:-7860}:7860"
     environment:
-      - RAG_PIPELINE_URL=http://rag-pipeline:8001
+      - RAG_API_URL=http://rag-pipeline:8001
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_SERVER_PORT=7860
       - GRADIO_ALLOWED_PATHS=${GRADIO_ALLOWED_PATHS:-/Users,/home}
@@ -102,6 +97,29 @@ services:
     profiles:
       - offline  # Only start with: docker-compose --profile offline up
     restart: unless-stopped
+
+  # Integration Test Runner
+  test-runner:
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    container_name: git-rag-tests
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Access Docker daemon
+      - ./tests:/tests
+    environment:
+      - RAG_API_URL=http://rag-pipeline:8001
+      - CHROMA_URL=http://chromadb:8000
+      - GRADIO_URL=http://web-ui:7860
+    depends_on:
+      - chromadb
+      - rag-pipeline
+      - web-ui
+    networks:
+      - rag-network
+    profiles:
+      - testing  # Only start with: docker-compose --profile testing up test-runner
+    command: python run_all_tests.py
 
 networks:
   rag-network:

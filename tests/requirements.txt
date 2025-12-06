@@ -1,0 +1,14 @@
+# Integration Test Requirements
+
+# HTTP Client
+httpx>=0.25.0
+
+# Docker SDK
+docker>=6.0.0
+
+# Git Operations
+GitPython>=3.1.40
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

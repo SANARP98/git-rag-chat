@@ -1,0 +1,17 @@
+# Gradio Web UI Requirements
+
+# Web UI Framework
+gradio>=5.9.0  # Gradio 5.x has Docker compatibility fixes
+huggingface_hub>=0.27.0  # Compatible with Gradio 5.x
+
+# HTTP Client
+httpx>=0.25.0
+
+# Git Operations
+GitPython>=3.1.40
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# Logging (standard library, but listed for clarity)
+# logging - built-in

@@ -29,11 +29,7 @@ class VectorStore:
         try:
             self.client = chromadb.HttpClient(
                 host=host,
-                port=port,
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
-                )
+                port=port
             )
             logger.info(f"Connected to ChromaDB at {host}:{port}")
 

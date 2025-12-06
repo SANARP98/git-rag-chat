@@ -47,7 +47,27 @@ A Docker-based RAG (Retrieval-Augmented Generation) chatbot system that tracks G
 - ✅ Automatic incremental indexing on changes
 - ✅ Integration with RAG pipeline API
 
-### 📅 Next Steps: Phase 5-8
+**Phase 5** (RAG Retrieval):
+
+- ✅ Semantic search with ChromaDB
+- ✅ MMR (Maximal Marginal Relevance) reranking
+- ✅ Diversity-based reranking algorithms
+- ✅ Context assembly for LLM prompts
+- ✅ Metadata filtering (language, file, type)
+- ✅ Hybrid search (semantic + keyword)
+- ✅ Query API endpoint with full retrieval pipeline
+
+**Phase 6** (LLM Integration):
+
+- ✅ Codex CLI provider for ChatGPT Enterprise
+- ✅ Ollama provider for offline usage
+- ✅ LLM factory pattern with auto-configuration
+- ✅ Streaming response support
+- ✅ Error handling and fallbacks
+- ✅ Query endpoint with LLM generation
+- ✅ Chat-based and prompt-based APIs
+
+### 📅 Next Steps: Phase 7-8
 
 See the [implementation plan](.claude/plans/golden-popping-iverson.md) for full details.
 

@@ -48,7 +48,10 @@ class QueryRequest(BaseModel):
     """Request model for RAG query."""
     query: str = Field(..., description="User query")
     repo_id: Optional[str] = Field(None, description="Optional repository ID (uses active if not specified)")
-    top_k: int = Field(5, description="Number of chunks to retrieve")
+    n_results: Optional[int] = Field(10, description="Number of results to return")
+    use_reranking: bool = Field(True, description="Whether to apply MMR reranking")
+    language: Optional[str] = Field(None, description="Filter by programming language")
+    file_path: Optional[str] = Field(None, description="Filter by file path")
 
 
 class QueryResponse(BaseModel):
@@ -56,6 +59,7 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[dict]
     repo_id: str
+    metadata: Optional[dict] = None
 
 
 class HealthResponse(BaseModel):

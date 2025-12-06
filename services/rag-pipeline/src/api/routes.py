@@ -1,6 +1,7 @@
 """API routes for RAG pipeline."""
 
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from typing import List
 import logging
 
@@ -10,6 +11,11 @@ from ..core.git_ops import GitOperations
 from ..core.vector_store import VectorStore
 from ..core.embedder import Embedder
 from ..indexing.indexer import RepositoryIndexer
+from ..retrieval.retriever import CodeRetriever
+from ..retrieval.reranker import Reranker
+from ..retrieval.context import ContextAssembler
+from ..llm.factory import LLMFactory
+from ..llm.base import LLMError
 from .models import (
     RepositoryCreate,
     RepositoryResponse,
@@ -58,6 +64,32 @@ def get_indexer(
         vector_store=vector_store,
         embedder=embedder
     )
+
+
+def get_retriever(
+    vector_store: VectorStore = Depends(get_vector_store),
+    embedder: Embedder = Depends(get_embedder)
+) -> CodeRetriever:
+    """Get retriever instance."""
+    return CodeRetriever(
+        vector_store=vector_store,
+        embedder=embedder
+    )
+
+
+def get_reranker(embedder: Embedder = Depends(get_embedder)) -> Reranker:
+    """Get reranker instance."""
+    return Reranker(embedder=embedder)
+
+
+def get_context_assembler() -> ContextAssembler:
+    """Get context assembler instance."""
+    return ContextAssembler(max_tokens=4000)
+
+
+def get_llm_provider(settings: Settings = Depends(get_settings)):
+    """Get LLM provider instance."""
+    return LLMFactory.create_from_settings(settings)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -292,7 +324,11 @@ async def get_indexing_status(
 @router.post("/query", response_model=QueryResponse)
 async def query(
     query_data: QueryRequest,
-    db: MetadataDB = Depends(get_db)
+    db: MetadataDB = Depends(get_db),
+    retriever: CodeRetriever = Depends(get_retriever),
+    reranker: Reranker = Depends(get_reranker),
+    context_assembler: ContextAssembler = Depends(get_context_assembler),
+    llm_provider = Depends(get_llm_provider)
 ):
     """Query the RAG system."""
     # Get active repository if not specified
@@ -307,9 +343,194 @@ async def query(
         if not repo:
             raise HTTPException(status_code=404, detail="Repository not found")
 
-    # TODO: Implement actual RAG query
-    return QueryResponse(
-        answer="Query functionality not yet implemented",
-        sources=[],
-        repo_id=repo_id
-    )
+    try:
+        # Get repository info
+        repo = db.get_repository(repo_id)
+        collection_name = repo['chroma_collection_name']
+
+        # Build filters from query parameters
+        filters = {}
+        if query_data.language:
+            filters['language'] = query_data.language
+        if query_data.file_path:
+            filters['file_path'] = query_data.file_path
+
+        # Retrieve relevant chunks
+        logger.info(f"Querying: {query_data.query[:100]}")
+        chunks = retriever.retrieve(
+            collection_name=collection_name,
+            query=query_data.query,
+            n_results=query_data.n_results or 20,
+            filters=filters if filters else None
+        )
+
+        if not chunks:
+            return QueryResponse(
+                answer="No relevant code found for your query. The repository may not be indexed yet.",
+                sources=[],
+                repo_id=repo_id,
+                metadata={
+                    'retrieved_chunks': 0,
+                    'collection': collection_name
+                }
+            )
+
+        # Apply reranking if requested
+        if query_data.use_reranking:
+            logger.info("Applying MMR reranking")
+            chunks = reranker.mmr_rerank(
+                chunks=chunks,
+                lambda_param=0.5,
+                top_k=query_data.n_results or 10
+            )
+
+        # Limit to requested number
+        final_chunks = chunks[:query_data.n_results] if query_data.n_results else chunks
+
+        # Assemble context for LLM
+        context = context_assembler.assemble_context(
+            chunks=final_chunks,
+            query=query_data.query,
+            max_chunks=10
+        )
+
+        # Build prompt (for now, return context as answer)
+        # In Phase 6, this will call the actual LLM
+        prompt = context_assembler.assemble_prompt(
+            chunks=final_chunks,
+            query=query_data.query
+        )
+
+        # Build sources list
+        sources = [
+            {
+                'file_path': chunk['file_path'],
+                'chunk_type': chunk['chunk_type'],
+                'name': chunk['name'],
+                'start_line': chunk['start_line'],
+                'end_line': chunk['end_line'],
+                'similarity': chunk['similarity'],
+                'code_preview': chunk['code'][:200] + '...' if len(chunk['code']) > 200 else chunk['code']
+            }
+            for chunk in final_chunks
+        ]
+
+        # Get metadata summary
+        metadata_summary = context_assembler.build_metadata_summary(final_chunks)
+
+        # Call LLM to generate answer
+        try:
+            logger.info("Calling LLM to generate answer")
+            answer = await llm_provider.generate(
+                prompt=prompt,
+                temperature=0.1,
+                max_tokens=2000
+            )
+            logger.info(f"LLM generated {len(answer)} chars")
+
+        except LLMError as e:
+            logger.error(f"LLM generation failed: {e}")
+            # Fallback to context only
+            answer = f"""# Error generating LLM response
+
+{str(e)}
+
+# Retrieved Code Context
+
+{context}
+
+---
+
+Query: {query_data.query}
+Retrieved: {len(final_chunks)} relevant code chunks from {metadata_summary['unique_files']} file(s)."""
+
+        return QueryResponse(
+            answer=answer,
+            sources=sources,
+            repo_id=repo_id,
+            metadata={
+                'retrieved_chunks': len(chunks),
+                'final_chunks': len(final_chunks),
+                'collection': collection_name,
+                'reranking_applied': query_data.use_reranking,
+                'summary': metadata_summary,
+                'prompt_length': len(prompt),
+                'llm_provider': llm_provider.get_model_info()['provider']
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/query/stream")
+async def query_stream(
+    query_data: QueryRequest,
+    db: MetadataDB = Depends(get_db),
+    retriever: CodeRetriever = Depends(get_retriever),
+    reranker: Reranker = Depends(get_reranker),
+    context_assembler: ContextAssembler = Depends(get_context_assembler),
+    llm_provider = Depends(get_llm_provider)
+):
+    """Query the RAG system with streaming response."""
+    # Get active repository if not specified
+    if not query_data.repo_id:
+        active_repo = db.get_active_repository()
+        if not active_repo:
+            raise HTTPException(status_code=400, detail="No active repository")
+        repo_id = active_repo["id"]
+    else:
+        repo_id = query_data.repo_id
+        repo = db.get_repository(repo_id)
+        if not repo:
+            raise HTTPException(status_code=404, detail="Repository not found")
+
+    try:
+        # Get repository info
+        repo = db.get_repository(repo_id)
+        collection_name = repo['chroma_collection_name']
+
+        # Build filters
+        filters = {}
+        if query_data.language:
+            filters['language'] = query_data.language
+        if query_data.file_path:
+            filters['file_path'] = query_data.file_path
+
+        # Retrieve chunks
+        chunks = retriever.retrieve(
+            collection_name=collection_name,
+            query=query_data.query,
+            n_results=query_data.n_results or 20,
+            filters=filters if filters else None
+        )
+
+        if not chunks:
+            async def error_stream():
+                yield "No relevant code found for your query."
+            return StreamingResponse(error_stream(), media_type="text/plain")
+
+        # Apply reranking
+        if query_data.use_reranking:
+            chunks = reranker.mmr_rerank(chunks, lambda_param=0.5, top_k=query_data.n_results or 10)
+
+        # Limit chunks
+        final_chunks = chunks[:query_data.n_results] if query_data.n_results else chunks
+
+        # Assemble prompt
+        prompt = context_assembler.assemble_prompt(chunks=final_chunks, query=query_data.query)
+
+        # Stream LLM response
+        async def generate_stream():
+            try:
+                async for chunk in llm_provider.generate_stream(prompt=prompt, temperature=0.1, max_tokens=2000):
+                    yield chunk
+            except LLMError as e:
+                yield f"\n\n[Error: {str(e)}]"
+
+        return StreamingResponse(generate_stream(), media_type="text/plain")
+
+    except Exception as e:
+        logger.error(f"Streaming query failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

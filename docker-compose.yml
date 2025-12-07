@@ -27,6 +27,7 @@ services:
       - ./data/models:/app/data/models
       - ${REPO_MOUNT_PATH:-/tmp}:/repos:ro  # Mount Git repo read-only
       - /Users/sana/Documents:/host/Documents:ro  # Mount entire Documents folder (optional)
+      - /Users/sana/.codex:/root/.codex  # Mount Codex CLI config
     environment:
       - CHROMA_HOST=${CHROMA_HOST:-chromadb}
       - CHROMA_PORT=${CHROMA_PORT:-8000}

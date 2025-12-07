@@ -229,6 +229,36 @@ class MetadataDB:
             cursor.execute(f"UPDATE repositories SET {set_clause} WHERE id = ?", values)
             logger.debug(f"Updated repository {repo_id}: {fields}")
 
+    def update_repository(self, repo_id: str, **kwargs):
+        """Update repository fields.
+
+        Args:
+            repo_id: Repository UUID
+            **kwargs: Fields to update (e.g., last_indexed_at, total_chunks, indexing_status)
+        """
+        if not kwargs:
+            logger.warning(f"No fields provided to update for repository {repo_id}")
+            return
+
+        # Handle CURRENT_TIMESTAMP for timestamp fields
+        set_clause_parts = []
+        values = []
+
+        for key, value in kwargs.items():
+            if value == 'CURRENT_TIMESTAMP':
+                set_clause_parts.append(f"{key} = CURRENT_TIMESTAMP")
+            else:
+                set_clause_parts.append(f"{key} = ?")
+                values.append(value)
+
+        set_clause = ", ".join(set_clause_parts)
+        values.append(repo_id)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE repositories SET {set_clause} WHERE id = ?", values)
+            logger.debug(f"Updated repository {repo_id}: {kwargs}")
+
     def delete_repository(self, repo_id: str):
         """Delete a repository and all associated data.
 

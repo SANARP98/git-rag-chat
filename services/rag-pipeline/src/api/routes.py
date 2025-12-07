@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
-from typing import List
+from typing import List, Optional
 import logging
 
 from ..config import get_settings, Settings
@@ -113,6 +113,80 @@ async def health_check(
     )
 
 
+@router.get("/codex/status")
+async def codex_status():
+    """Check Codex CLI availability and authentication status."""
+    import subprocess
+    import json as json_lib
+
+    try:
+        # Check if codex is installed
+        version_result = subprocess.run(
+            ['codex', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if version_result.returncode != 0:
+            return {
+                "installed": False,
+                "authenticated": False,
+                "version": None,
+                "error": "Codex CLI not found"
+            }
+
+        version = version_result.stdout.strip()
+
+        # Try a simple test to check authentication
+        # Note: --dangerously-bypass-approvals-and-sandbox is required in Docker containers
+        test_result = subprocess.run(
+            ['codex', 'exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--json', 'echo test'],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+
+        authenticated = test_result.returncode == 0
+        error_msg = None
+
+        if not authenticated:
+            stderr = test_result.stderr
+            if "403" in stderr or "Unauthorized" in stderr:
+                error_msg = "Not authenticated. Please run 'codex' on host to login."
+            else:
+                error_msg = stderr[:200] if stderr else "Unknown authentication error"
+
+        return {
+            "installed": True,
+            "authenticated": authenticated,
+            "version": version,
+            "error": error_msg
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "installed": True,
+            "authenticated": None,
+            "version": None,
+            "error": "Codex CLI timeout - may be waiting for input"
+        }
+    except FileNotFoundError:
+        return {
+            "installed": False,
+            "authenticated": False,
+            "version": None,
+            "error": "Codex CLI not installed in container"
+        }
+    except Exception as e:
+        return {
+            "installed": None,
+            "authenticated": None,
+            "version": None,
+            "error": str(e)
+        }
+
+
 @router.post("/repos", response_model=RepositoryResponse)
 async def create_repository(
     repo_data: RepositoryCreate,
@@ -216,7 +290,7 @@ async def get_repository_stats(repo_id: str, db: MetadataDB = Depends(get_db)):
 @router.post("/repos/{repo_id}/index")
 async def trigger_indexing(
     repo_id: str,
-    request: IndexingRequest = None,
+    request: Optional[IndexingRequest] = None,
     indexer: RepositoryIndexer = Depends(get_indexer),
     db: MetadataDB = Depends(get_db)
 ):
@@ -387,6 +461,50 @@ async def query(
         # Limit to requested number
         final_chunks = chunks[:query_data.n_results] if query_data.n_results else chunks
 
+        # Check if query is about Git history and augment with actual Git data
+        git_context = ""
+        query_lower = query_data.query.lower()
+        if any(keyword in query_lower for keyword in ['commit', 'git log', 'git history', 'latest change', 'recent change', 'what changed', 'changes in']):
+            try:
+                # Get latest commits
+                import subprocess
+                result = subprocess.run(
+                    ['git', '-C', repo['path'], 'log', '-5', '--format=%H|%s|%an|%ar'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+
+                if result.returncode == 0 and result.stdout:
+                    git_context = "\n\n# Actual Git History\n\nLatest 5 commits:\n\n"
+                    commits = []
+                    for line in result.stdout.strip().split('\n'):
+                        hash_val, msg, author, date = line.split('|', 3)
+                        git_context += f"- `{hash_val[:7]}` - {msg} (by {author}, {date})\n"
+                        commits.append(hash_val[:7])
+
+                    # If query asks about "latest commit" or "what changed", include the diff
+                    if any(phrase in query_lower for phrase in ['latest commit', 'what changed', 'changes in', 'what did', 'functional improvement']):
+                        logger.info("Adding diff for latest commit")
+                        diff_result = subprocess.run(
+                            ['git', '-C', repo['path'], 'show', '--stat', '--format=%B', commits[0]],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+
+                        if diff_result.returncode == 0 and diff_result.stdout:
+                            # Limit diff to first 1500 chars to avoid overwhelming the context
+                            diff_text = diff_result.stdout[:1500]
+                            if len(diff_result.stdout) > 1500:
+                                diff_text += "\n... (diff truncated for brevity)"
+
+                            git_context += f"\n\n## Latest Commit Details (`{commits[0]}`)\n\n```diff\n{diff_text}\n```\n"
+
+                    logger.info(f"Added Git history context for query: {query_data.query[:50]}")
+            except Exception as e:
+                logger.warning(f"Failed to get Git history: {e}")
+
         # Assemble context for LLM
         context = context_assembler.assemble_context(
             chunks=final_chunks,
@@ -394,12 +512,20 @@ async def query(
             max_chunks=10
         )
 
+        # Add Git context if available
+        if git_context:
+            context = git_context + "\n\n" + context
+
         # Build prompt (for now, return context as answer)
         # In Phase 6, this will call the actual LLM
         prompt = context_assembler.assemble_prompt(
             chunks=final_chunks,
             query=query_data.query
         )
+
+        # Inject Git context into prompt if available
+        if git_context:
+            prompt = prompt.replace("# Relevant Code Context\n\n", f"# Relevant Code Context\n\n{git_context}\n\n")
 
         # Build sources list
         sources = [

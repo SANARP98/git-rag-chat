@@ -96,6 +96,9 @@ class RepositoryIndexer:
             skipped_files = 0
 
             for file_path in tracked_files:
+                # Convert to absolute path
+                absolute_file_path = Path(repo_path) / file_path
+
                 # Check if we should index this file
                 if not self.chunker.should_index_file(file_path):
                     skipped_files += 1
@@ -103,7 +106,7 @@ class RepositoryIndexer:
 
                 # Check if file has changed (unless force_reindex)
                 if not force_reindex:
-                    file_hash = self._compute_file_hash(file_path)
+                    file_hash = self._compute_file_hash(absolute_file_path)
                     existing_file = self.metadata_db.get_file(repo_id, str(file_path))
 
                     if existing_file and existing_file['file_hash'] == file_hash:
@@ -116,7 +119,7 @@ class RepositoryIndexer:
                     chunks_added = self._index_file(
                         repo_id=repo_id,
                         collection_name=collection_name,
-                        file_path=file_path,
+                        file_path=absolute_file_path,
                         commit_hash=latest_commit,
                         is_uncommitted=False
                     )

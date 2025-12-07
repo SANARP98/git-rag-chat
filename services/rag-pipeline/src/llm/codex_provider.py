@@ -31,7 +31,7 @@ class CodexCLIProvider(LLMProvider):
         super().__init__(config)
 
         self.profile = self.config.get('profile')
-        self.timeout = self.config.get('timeout', 60)
+        self.timeout = self.config.get('timeout', 120)  # Increased from 60s to 120s for complex queries
         self.default_temperature = self.config.get('temperature', 0.7)
         self.default_max_tokens = self.config.get('max_tokens', 2000)
 
@@ -72,7 +72,9 @@ class CodexCLIProvider(LLMProvider):
 
         try:
             # Build command
-            cmd = ['codex', 'exec']
+            # Note: --skip-git-repo-check and --dangerously-bypass-approvals-and-sandbox
+            # are required when running in Docker containers
+            cmd = ['codex', 'exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox']
 
             if self.profile:
                 cmd.extend(['--profile', self.profile])
@@ -135,7 +137,9 @@ class CodexCLIProvider(LLMProvider):
 
         try:
             # Build command
-            cmd = ['codex', 'exec']
+            # Note: --skip-git-repo-check and --dangerously-bypass-approvals-and-sandbox
+            # are required when running in Docker containers
+            cmd = ['codex', 'exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox']
 
             if self.profile:
                 cmd.extend(['--profile', self.profile])
@@ -249,22 +253,25 @@ class CodexCLIProvider(LLMProvider):
         lines = output.strip().split('\n')
         response_text = ""
 
-        for line in reversed(lines):
+        for line in lines:
             if not line.strip():
                 continue
 
             try:
                 event = json.loads(line)
+                event_type = event.get('type', '')
 
-                # Look for final message
-                if event.get('type') == 'turn_completed':
-                    response_text = event.get('data', {}).get('message', '')
+                # Look for completed items with agent_message
+                if event_type == 'item.completed':
+                    item = event.get('item', {})
+                    if item.get('type') == 'agent_message':
+                        response_text = item.get('text', '')
+                        # Don't break - keep looking for later messages
+
+                # Also look for turn.completed
+                elif event_type == 'turn.completed':
+                    # Turn completed, we should have the message already
                     break
-
-                # Fallback: accumulate message deltas
-                elif event.get('type') == 'message_delta':
-                    delta = event.get('data', {}).get('delta', '')
-                    response_text = delta + response_text
 
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse JSONL line: {line}")

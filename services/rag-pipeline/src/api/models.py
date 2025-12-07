@@ -39,9 +39,7 @@ class RepositoryStats(BaseModel):
 
 class IndexingRequest(BaseModel):
     """Request model for triggering indexing."""
-    repo_id: str = Field(..., description="Repository ID to index")
-    job_type: str = Field("full", description="Job type: full, incremental, file, commit")
-    target_path: Optional[str] = Field(None, description="Optional target file or commit hash")
+    force_reindex: bool = Field(False, description="Force full reindex even if already indexed")
 
 
 class QueryRequest(BaseModel):

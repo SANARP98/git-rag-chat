@@ -58,10 +58,13 @@ class VectorStore:
             ChromaDB collection object
         """
         try:
+            # ChromaDB requires non-empty metadata dict, provide default
+            collection_metadata = metadata if metadata else {"description": "Code repository collection"}
+
             collection = self.client.get_or_create_collection(
                 name=collection_name,
                 embedding_function=self.embedding_function,
-                metadata=metadata or {}
+                metadata=collection_metadata
             )
             logger.info(f"Created/retrieved collection: {collection_name}")
             return collection

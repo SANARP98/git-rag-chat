@@ -14,7 +14,11 @@
       "Bash(pip3 install:*)",
       "Bash(tee:*)",
       "Bash(docker-compose rm:*)",
-      "Bash(docker-compose restart:*)"
+      "Bash(docker-compose restart:*)",
+      "Bash(find:*)",
+      "Bash(tree:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

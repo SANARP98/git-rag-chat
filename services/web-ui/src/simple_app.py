@@ -149,6 +149,38 @@ def delete_repository(repo_selection: str):
         return f"❌ Error: {str(e)}"
 
 
+def check_codex_status():
+    """Check Codex CLI status."""
+    try:
+        response = client.get(f"{RAG_API_URL}/api/codex/status")
+        if response.status_code == 200:
+            data = response.json()
+
+            status_parts = ["**Codex CLI Status:**\n"]
+
+            if data.get('installed'):
+                status_parts.append(f"✅ **Installed**: {data.get('version', 'Unknown version')}")
+            else:
+                status_parts.append("❌ **Not Installed**")
+
+            if data.get('authenticated'):
+                status_parts.append("\n✅ **Authenticated**: Ready to use")
+            elif data.get('authenticated') is False:
+                status_parts.append("\n❌ **Not Authenticated**")
+            else:
+                status_parts.append("\n⚠️ **Authentication Status**: Unknown")
+
+            if data.get('error'):
+                status_parts.append(f"\n\n**Error**: {data.get('error')}")
+
+            return "\n".join(status_parts)
+        else:
+            return f"❌ Failed to check Codex status: {response.status_code}"
+    except Exception as e:
+        logger.error(f"Error checking Codex status: {e}")
+        return f"❌ Error: {str(e)}"
+
+
 def query_rag(message: str, history):
     """Query the RAG API."""
     if not message.strip():
@@ -170,12 +202,16 @@ def query_rag(message: str, history):
                 file_path = src.get('file_path', 'Unknown')
                 formatted += f"{i}. `{file_path}`\n"
 
-            history.append((message, formatted))
+            # Gradio 6.x expects messages with 'role' and 'content' (array of content blocks)
+            history.append({"role": "user", "content": [{"type": "text", "text": message}]})
+            history.append({"role": "assistant", "content": [{"type": "text", "text": formatted}]})
         else:
-            history.append((message, f"❌ Error: {response.status_code}"))
+            history.append({"role": "user", "content": [{"type": "text", "text": message}]})
+            history.append({"role": "assistant", "content": [{"type": "text", "text": f"❌ Error: {response.status_code}"}]})
     except Exception as e:
         logger.error(f"Query error: {e}")
-        history.append((message, f"❌ Error: {str(e)}"))
+        history.append({"role": "user", "content": [{"type": "text", "text": message}]})
+        history.append({"role": "assistant", "content": [{"type": "text", "text": f"❌ Error: {str(e)}"}]})
 
     return history
 
@@ -223,6 +259,11 @@ with demo:
 
     manage_status = gr.Textbox(label="Management Status", lines=2, interactive=False)
 
+    gr.Markdown("## 🔧 Codex CLI Status")
+    codex_status_display = gr.Markdown("Checking Codex status...")
+    with gr.Row():
+        check_codex_btn = gr.Button("Check Codex Status", variant="secondary")
+
     # Event handlers
     def respond(message, history):
         return query_rag(message, history), ""
@@ -239,11 +280,13 @@ with demo:
     refresh_btn.click(refresh_repos, outputs=[repos_list, repo_dropdown])
     reindex_btn.click(reindex_repository, [repo_dropdown], [manage_status])
     delete_btn.click(delete_repository, [repo_dropdown], [manage_status])
+    check_codex_btn.click(check_codex_status, outputs=[codex_status_display])
 
-    # Load repositories on startup
+    # Load repositories and Codex status on startup
     demo.load(refresh_repos, outputs=[repos_list, repo_dropdown])
+    demo.load(check_codex_status, outputs=[codex_status_display])
 
-    gr.Markdown("---\n💻 **Git RAG Chat** | Powered by ChromaDB + Gradio")
+    gr.Markdown("---\n💻 **Git RAG Chat** | Powered by ChromaDB + Gradio + Codex CLI")
 
 
 if __name__ == "__main__":

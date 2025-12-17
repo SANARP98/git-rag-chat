@@ -24,6 +24,10 @@ class RepositoryResponse(BaseModel):
     indexing_status: str
     total_chunks: int
     total_files: int
+    # NEW: Iteration 2 - Embedding tracking
+    embedding_provider: Optional[str] = Field(None, description="Embedding provider used (local/openai)")
+    embedding_model: Optional[str] = Field(None, description="Embedding model name")
+    embedding_dimension: Optional[int] = Field(None, description="Embedding dimension")
 
 
 class RepositoryStats(BaseModel):
@@ -40,6 +44,9 @@ class RepositoryStats(BaseModel):
 class IndexingRequest(BaseModel):
     """Request model for triggering indexing."""
     force_reindex: bool = Field(False, description="Force full reindex even if already indexed")
+    # NEW: Iteration 2 - Embedding selection
+    embedding_provider: Optional[str] = Field(None, description="Embedding provider: 'local' or 'openai'")
+    embedding_model: Optional[str] = Field(None, description="Specific embedding model name (optional)")
 
 
 class QueryRequest(BaseModel):

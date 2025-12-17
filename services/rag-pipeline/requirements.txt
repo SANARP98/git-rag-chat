@@ -14,6 +14,7 @@ GitPython==3.1.40
 sentence-transformers>=2.2.2
 transformers>=4.35.0
 numpy>=1.24.0,<2.0.0
+openai>=1.40.0
 
 # Code parsing
 tree-sitter>=0.20.0

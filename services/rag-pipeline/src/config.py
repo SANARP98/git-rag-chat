@@ -28,7 +28,9 @@ class LLMConfig(BaseModel):
 
 class EmbeddingConfig(BaseModel):
     """Embedding model configuration."""
+    provider: str = "local"  # "local" or "openai"
     model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    openai_model: str = "text-embedding-3-large"
     cache_dir: str = "/app/data/models"
 
 
@@ -45,8 +47,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "deepseek-coder:33b"
 
-    # Embedding settings
+    # Embedding settings (Iteration 2)
+    embedding_provider: str = "local"  # "local" or "openai"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    openai_api_key: Optional[str] = None
+    openai_embedding_model: str = "text-embedding-3-large"
 
     # Database settings
     metadata_db_path: str = "/app/data/metadata/repos.db"
@@ -84,7 +89,9 @@ class Settings(BaseSettings):
     def embedding_config(self) -> EmbeddingConfig:
         """Get embedding configuration."""
         return EmbeddingConfig(
-            model=self.embedding_model
+            provider=self.embedding_provider,
+            model=self.embedding_model,
+            openai_model=self.openai_embedding_model
         )
 
 

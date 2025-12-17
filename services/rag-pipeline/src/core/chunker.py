@@ -70,7 +70,7 @@ class CodeChunker:
         return chunks
 
     def _split_with_overlap(self, chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Split a large chunk into smaller chunks with overlap.
+        """Smart splitting at logical boundaries (empty lines, comments, block endings).
 
         Args:
             chunk: Original chunk
@@ -85,34 +85,109 @@ class CodeChunker:
         # Calculate lines per chunk (approximate)
         avg_line_length = len(code) / len(lines) if lines else 100
         lines_per_chunk = int(self.max_chars / avg_line_length) if avg_line_length > 0 else 50
-        overlap_lines = int(self.overlap_chars / avg_line_length) if avg_line_length > 0 else 5
 
-        i = 0
-        part_num = 1
-        while i < len(lines):
-            # Get chunk lines with overlap
-            end_idx = min(i + lines_per_chunk, len(lines))
-            chunk_lines = lines[i:end_idx]
+        # Find logical split points
+        split_points = self._find_split_points(lines, lines_per_chunk)
 
-            # Create sub-chunk
+        prev_end = 0
+        for idx, split_point in enumerate(split_points, 1):
+            # Add overlap from previous chunk
+            overlap_start = max(0, prev_end - int(self.overlap_chars / avg_line_length))
+            chunk_lines = lines[overlap_start:split_point]
+
             sub_code = '\n'.join(chunk_lines)
             sub_chunk = chunk.copy()
             sub_chunk['code'] = sub_code
-            sub_chunk['name'] = f"{chunk['name']}_part{part_num}"
-            sub_chunk['start_line'] = chunk['start_line'] + i
-            sub_chunk['end_line'] = chunk['start_line'] + end_idx - 1
+            sub_chunk['name'] = f"{chunk['name']}_part{idx}"
+            sub_chunk['start_line'] = chunk['start_line'] + overlap_start
+            sub_chunk['end_line'] = chunk['start_line'] + split_point - 1
             sub_chunk['line_count'] = len(chunk_lines)
             sub_chunk['is_partial'] = True
-            sub_chunk['part_number'] = part_num
+            sub_chunk['part_number'] = idx
             sub_chunk['parent_chunk'] = chunk['name']
 
-            sub_chunks.append(self._finalize_chunk(sub_chunk))
+            # Preserve signature in split chunks
+            if 'signature' in chunk:
+                sub_chunk['parent_signature'] = chunk['signature']
+            if 'docstring' in chunk and idx == 1:
+                sub_chunk['docstring'] = chunk['docstring']
 
-            # Move to next chunk with overlap
-            i += lines_per_chunk - overlap_lines
-            part_num += 1
+            sub_chunks.append(self._finalize_chunk(sub_chunk))
+            prev_end = split_point
 
         return sub_chunks
+
+    def _find_split_points(self, lines: List[str], target_chunk_size: int) -> List[int]:
+        """Find logical split points (empty lines, comments, block endings).
+
+        Args:
+            lines: List of code lines
+            target_chunk_size: Target number of lines per chunk
+
+        Returns:
+            List of line indices where splits should occur
+        """
+        split_points = []
+        current_pos = 0
+
+        while current_pos < len(lines):
+            target_pos = min(current_pos + target_chunk_size, len(lines))
+
+            # Search for best split point within a window around target position
+            window = 10
+            search_start = max(current_pos + target_chunk_size - window, current_pos)
+            search_end = min(target_pos + window, len(lines))
+
+            best_split = target_pos
+            best_score = 0
+
+            for i in range(search_start, search_end):
+                score = self._score_split_point(lines, i)
+                if score > best_score:
+                    best_score = score
+                    best_split = i
+
+            split_points.append(best_split)
+            current_pos = best_split
+
+        return split_points
+
+    def _score_split_point(self, lines: List[str], idx: int) -> int:
+        """Score split point quality (higher = better).
+
+        Args:
+            lines: List of code lines
+            idx: Line index to score
+
+        Returns:
+            Score (0-10, higher is better)
+        """
+        if idx >= len(lines):
+            return 0
+
+        line = lines[idx].strip()
+
+        # Empty line - perfect split
+        if not line:
+            return 10
+
+        # Comment - good split
+        if line.startswith('#') or line.startswith('//') or line.startswith('/*'):
+            return 8
+
+        # Check for dedent (block boundary)
+        if idx + 1 < len(lines):
+            current_indent = len(lines[idx]) - len(lines[idx].lstrip())
+            next_indent = len(lines[idx + 1]) - len(lines[idx + 1].lstrip())
+            if next_indent < current_indent:
+                return 7
+
+        # Closing brace/bracket/return
+        if line in ['}', ')', ']'] or line.startswith('return') or line.startswith('}'):
+            return 6
+
+        # Regular line
+        return 1
 
     def _chunk_markdown(self, content: str, file_path: Path) -> List[Dict[str, Any]]:
         """Chunk markdown content by sections (headers).
@@ -230,7 +305,7 @@ class CodeChunker:
         return [self._finalize_chunk(chunk) for chunk in chunks]
 
     def _finalize_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-        """Finalize chunk by adding computed fields.
+        """Finalize chunk by adding computed fields and complexity metrics (Phase 2).
 
         Args:
             chunk: Chunk dictionary
@@ -238,14 +313,48 @@ class CodeChunker:
         Returns:
             Finalized chunk with additional metadata
         """
-        # Add character count
-        chunk['char_count'] = len(chunk['code'])
+        code = chunk['code']
 
-        # Estimate token count (rough: chars / 4)
+        # Existing metrics
+        chunk['char_count'] = len(code)
         chunk['token_count_estimate'] = chunk['char_count'] // 4
+        chunk['preview'] = code[:100] + '...' if len(code) > 100 else code
 
-        # Add preview (first 100 chars)
-        chunk['preview'] = chunk['code'][:100] + '...' if len(chunk['code']) > 100 else chunk['code']
+        # Phase 2: Complexity estimation
+        lines = [l for l in code.split('\n') if l.strip() and not l.strip().startswith('#')]
+
+        # Base complexity: lines of code
+        complexity = len(lines)
+
+        # Conditionals add complexity
+        complexity += code.count('if ') * 2
+        complexity += code.count('elif ') * 2
+        complexity += code.count('else:') * 1
+
+        # Loops add significant complexity
+        complexity += code.count('for ') * 3
+        complexity += code.count('while ') * 3
+
+        # Error handling adds complexity
+        complexity += code.count('try:') * 2
+        complexity += code.count('except ') * 2
+
+        # Function calls and complexity indicators
+        complexity += code.count('lambda ') * 2
+        complexity += code.count('yield ') * 2
+
+        chunk['complexity_estimate'] = min(complexity, 1000)  # Cap at 1000
+        chunk['loc'] = len(lines)  # Lines of code (non-comment, non-blank)
+
+        # Phase 2: Function classification (if it's a function chunk)
+        if chunk.get('chunk_type') == 'function':
+            chunk['is_public'] = not chunk.get('name', '').startswith('_')
+            chunk['is_property'] = '@property' in ' '.join(chunk.get('decorators', []))
+            chunk['is_async'] = 'async def' in chunk.get('signature', '')
+        else:
+            chunk['is_public'] = True  # Classes and other chunks default to public
+            chunk['is_property'] = False
+            chunk['is_async'] = False
 
         return chunk
 

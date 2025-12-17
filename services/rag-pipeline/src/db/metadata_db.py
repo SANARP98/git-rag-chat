@@ -57,7 +57,10 @@ class MetadataDB:
                     is_active BOOLEAN DEFAULT 0,
                     indexing_status TEXT CHECK(indexing_status IN ('pending', 'in_progress', 'completed', 'failed')),
                     total_chunks INTEGER DEFAULT 0,
-                    total_files INTEGER DEFAULT 0
+                    total_files INTEGER DEFAULT 0,
+                    embedding_provider TEXT DEFAULT 'local',
+                    embedding_model TEXT DEFAULT 'sentence-transformers/all-MiniLM-L6-v2',
+                    embedding_dimension INTEGER DEFAULT 384
                 )
             """)
 
@@ -114,7 +117,37 @@ class MetadataDB:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_indexed_commits_repo ON indexed_commits(repo_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_indexing_queue_status ON indexing_queue(status, created_at)")
 
+            # Run migrations for embedding tracking (Phase 1.7)
+            self._migrate_embedding_columns(cursor)
+
             logger.info(f"Database initialized at {self.db_path}")
+
+    def _migrate_embedding_columns(self, cursor):
+        """Migrate existing databases to add embedding tracking columns.
+
+        Args:
+            cursor: Database cursor
+        """
+        try:
+            # Check if embedding columns exist
+            cursor.execute("PRAGMA table_info(repositories)")
+            columns = [col[1] for col in cursor.fetchall()]
+
+            # Add missing columns if they don't exist
+            if 'embedding_provider' not in columns:
+                cursor.execute("ALTER TABLE repositories ADD COLUMN embedding_provider TEXT DEFAULT 'local'")
+                logger.info("Added embedding_provider column to repositories table")
+
+            if 'embedding_model' not in columns:
+                cursor.execute("ALTER TABLE repositories ADD COLUMN embedding_model TEXT DEFAULT 'sentence-transformers/all-MiniLM-L6-v2'")
+                logger.info("Added embedding_model column to repositories table")
+
+            if 'embedding_dimension' not in columns:
+                cursor.execute("ALTER TABLE repositories ADD COLUMN embedding_dimension INTEGER DEFAULT 384")
+                logger.info("Added embedding_dimension column to repositories table")
+
+        except Exception as e:
+            logger.warning(f"Migration check/execution encountered issue: {e}")
 
     # Repository methods
     def add_repository(self, path: str, name: Optional[str] = None) -> str:
@@ -258,6 +291,30 @@ class MetadataDB:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE repositories SET {set_clause} WHERE id = ?", values)
             logger.debug(f"Updated repository {repo_id}: {kwargs}")
+
+    def update_repository_embedding_info(
+        self,
+        repo_id: str,
+        embedding_provider: str,
+        embedding_model: str,
+        embedding_dimension: int
+    ):
+        """Update embedding information for a repository.
+
+        Args:
+            repo_id: Repository UUID
+            embedding_provider: Embedding provider ('local' or 'openai')
+            embedding_model: Model name used for embeddings
+            embedding_dimension: Dimension of the embeddings
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE repositories
+                SET embedding_provider = ?, embedding_model = ?, embedding_dimension = ?
+                WHERE id = ?
+            """, (embedding_provider, embedding_model, embedding_dimension, repo_id))
+            logger.info(f"Updated embedding info for repository {repo_id}: {embedding_provider}/{embedding_model} ({embedding_dimension}D)")
 
     def delete_repository(self, repo_id: str):
         """Delete a repository and all associated data.

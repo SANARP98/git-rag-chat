@@ -9,7 +9,7 @@ from ..config import get_settings, Settings
 from ..db.metadata_db import MetadataDB
 from ..core.git_ops import GitOperations
 from ..core.vector_store import VectorStore
-from ..core.embedder import Embedder
+from ..core.embedder import BaseEmbedder, create_embedder
 from ..indexing.indexer import RepositoryIndexer
 from ..retrieval.retriever import CodeRetriever
 from ..retrieval.reranker import Reranker
@@ -47,16 +47,27 @@ def get_vector_store() -> VectorStore:
     )
 
 
-def get_embedder() -> Embedder:
+def get_embedder() -> BaseEmbedder:
     """Get embedder instance."""
     settings = get_settings()
-    return Embedder(model_name=settings.embedding_model)
+    kwargs = {}
+    if settings.embedding_provider == "openai":
+        kwargs["api_key"] = settings.openai_api_key
+        model_name = settings.openai_embedding_model
+    else:
+        model_name = settings.embedding_model
+
+    return create_embedder(
+        provider=settings.embedding_provider,
+        model_name=model_name,
+        **kwargs
+    )
 
 
 def get_indexer(
     db: MetadataDB = Depends(get_db),
     vector_store: VectorStore = Depends(get_vector_store),
-    embedder: Embedder = Depends(get_embedder)
+    embedder: BaseEmbedder = Depends(get_embedder)
 ) -> RepositoryIndexer:
     """Get indexer instance."""
     return RepositoryIndexer(
@@ -68,7 +79,7 @@ def get_indexer(
 
 def get_retriever(
     vector_store: VectorStore = Depends(get_vector_store),
-    embedder: Embedder = Depends(get_embedder)
+    embedder: BaseEmbedder = Depends(get_embedder)
 ) -> CodeRetriever:
     """Get retriever instance."""
     return CodeRetriever(
@@ -77,7 +88,7 @@ def get_retriever(
     )
 
 
-def get_reranker(embedder: Embedder = Depends(get_embedder)) -> Reranker:
+def get_reranker(embedder: BaseEmbedder = Depends(get_embedder)) -> Reranker:
     """Get reranker instance."""
     return Reranker(embedder=embedder)
 
@@ -291,16 +302,43 @@ async def get_repository_stats(repo_id: str, db: MetadataDB = Depends(get_db)):
 async def trigger_indexing(
     repo_id: str,
     request: Optional[IndexingRequest] = None,
-    indexer: RepositoryIndexer = Depends(get_indexer),
-    db: MetadataDB = Depends(get_db)
+    db: MetadataDB = Depends(get_db),
+    vector_store: VectorStore = Depends(get_vector_store)
 ):
-    """Trigger repository indexing."""
+    """Trigger repository indexing with optional embedding provider selection."""
     repo = db.get_repository(repo_id)
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
     try:
+        settings = get_settings()
         force_reindex = request.force_reindex if request else False
+
+        # Get embedding provider from request or use default from settings
+        embedding_provider = request.embedding_provider if request and request.embedding_provider else settings.embedding_provider
+        embedding_model = request.embedding_model if request and request.embedding_model else None
+
+        # Create embedder with specified provider
+        if embedding_provider == "openai":
+            embedder = create_embedder(
+                provider="openai",
+                model_name=embedding_model or settings.openai_embedding_model,
+                api_key=settings.openai_api_key
+            )
+        else:
+            embedder = create_embedder(
+                provider="local",
+                model_name=embedding_model or settings.embedding_model
+            )
+
+        logger.info(f"Using embedder: {embedding_provider}/{embedder.get_model_info()['model_name']}")
+
+        # Create indexer with custom embedder
+        indexer = RepositoryIndexer(
+            metadata_db=db,
+            vector_store=vector_store,
+            embedder=embedder
+        )
 
         # Run full indexing
         result = indexer.index_repository(
@@ -309,12 +347,23 @@ async def trigger_indexing(
             force_reindex=force_reindex
         )
 
+        # Update repository with embedding info
+        db.update_repository_embedding_info(
+            repo_id=repo_id,
+            embedding_provider=embedding_provider,
+            embedding_model=embedder.get_model_info()['model_name'],
+            embedding_dimension=embedder.get_embedding_dimension()
+        )
+
         return {
             "message": "Indexing completed",
             "repo_id": repo_id,
             "indexed_files": result['indexed_files'],
             "total_chunks": result['total_chunks'],
-            "status": result['status']
+            "status": result['status'],
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedder.get_model_info()['model_name'],
+            "embedding_dimension": embedder.get_embedding_dimension()
         }
     except Exception as e:
         logger.error(f"Error during indexing: {e}")
@@ -399,12 +448,12 @@ async def get_indexing_status(
 async def query(
     query_data: QueryRequest,
     db: MetadataDB = Depends(get_db),
-    retriever: CodeRetriever = Depends(get_retriever),
+    vector_store: VectorStore = Depends(get_vector_store),
     reranker: Reranker = Depends(get_reranker),
     context_assembler: ContextAssembler = Depends(get_context_assembler),
     llm_provider = Depends(get_llm_provider)
 ):
-    """Query the RAG system."""
+    """Query the RAG system with dynamic embedder matching repository's embedding."""
     # Get active repository if not specified
     if not query_data.repo_id:
         active_repo = db.get_active_repository()
@@ -421,6 +470,31 @@ async def query(
         # Get repository info
         repo = db.get_repository(repo_id)
         collection_name = repo['chroma_collection_name']
+
+        # Create embedder matching the repository's embedding provider
+        settings = get_settings()
+        embedding_provider = repo.get('embedding_provider', 'local')
+        embedding_model = repo.get('embedding_model')
+
+        logger.info(f"Creating query embedder: {embedding_provider}/{embedding_model}")
+
+        if embedding_provider == "openai":
+            embedder = create_embedder(
+                provider="openai",
+                model_name=embedding_model or settings.openai_embedding_model,
+                api_key=settings.openai_api_key
+            )
+        else:
+            embedder = create_embedder(
+                provider="local",
+                model_name=embedding_model or settings.embedding_model
+            )
+
+        # Create retriever with matching embedder
+        retriever = CodeRetriever(
+            vector_store=vector_store,
+            embedder=embedder
+        )
 
         # Build filters from query parameters
         filters = {}
@@ -594,12 +668,12 @@ Retrieved: {len(final_chunks)} relevant code chunks from {metadata_summary['uniq
 async def query_stream(
     query_data: QueryRequest,
     db: MetadataDB = Depends(get_db),
-    retriever: CodeRetriever = Depends(get_retriever),
+    vector_store: VectorStore = Depends(get_vector_store),
     reranker: Reranker = Depends(get_reranker),
     context_assembler: ContextAssembler = Depends(get_context_assembler),
     llm_provider = Depends(get_llm_provider)
 ):
-    """Query the RAG system with streaming response."""
+    """Query the RAG system with streaming response and dynamic embedder."""
     # Get active repository if not specified
     if not query_data.repo_id:
         active_repo = db.get_active_repository()
@@ -616,6 +690,29 @@ async def query_stream(
         # Get repository info
         repo = db.get_repository(repo_id)
         collection_name = repo['chroma_collection_name']
+
+        # Create embedder matching the repository's embedding provider
+        settings = get_settings()
+        embedding_provider = repo.get('embedding_provider', 'local')
+        embedding_model = repo.get('embedding_model')
+
+        if embedding_provider == "openai":
+            embedder = create_embedder(
+                provider="openai",
+                model_name=embedding_model or settings.openai_embedding_model,
+                api_key=settings.openai_api_key
+            )
+        else:
+            embedder = create_embedder(
+                provider="local",
+                model_name=embedding_model or settings.embedding_model
+            )
+
+        # Create retriever with matching embedder
+        retriever = CodeRetriever(
+            vector_store=vector_store,
+            embedder=embedder
+        )
 
         # Build filters
         filters = {}

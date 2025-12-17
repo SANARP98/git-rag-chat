@@ -8,7 +8,7 @@ import hashlib
 from ..core.git_ops import GitOperations
 from ..core.parser import CodeParser
 from ..core.chunker import CodeChunker
-from ..core.embedder import Embedder
+from ..core.embedder import BaseEmbedder
 from ..core.vector_store import VectorStore
 from ..db.metadata_db import MetadataDB
 
@@ -22,7 +22,7 @@ class RepositoryIndexer:
         self,
         metadata_db: MetadataDB,
         vector_store: VectorStore,
-        embedder: Embedder,
+        embedder: BaseEmbedder,
         parser: Optional[CodeParser] = None,
         chunker: Optional[CodeChunker] = None
     ):
@@ -31,7 +31,7 @@ class RepositoryIndexer:
         Args:
             metadata_db: Metadata database instance
             vector_store: Vector store instance
-            embedder: Embedder instance
+            embedder: Embedder instance (BaseEmbedder)
             parser: Code parser (optional, creates new if not provided)
             chunker: Code chunker (optional, creates new if not provided)
         """
@@ -266,9 +266,18 @@ class RepositoryIndexer:
             chunk['commit_hash'] = commit_hash or ''
             chunk['is_uncommitted'] = is_uncommitted
 
-        # Add chunks to vector store
+        # Generate embeddings and add chunks to vector store
         if final_chunks:
-            self.vector_store.add_chunks(collection_name, final_chunks)
+            # Extract code texts for embedding
+            chunk_texts = [chunk['code'] for chunk in final_chunks]
+
+            # Generate embeddings using the embedder
+            logger.debug(f"Generating embeddings for {len(chunk_texts)} chunks from {file_path}")
+            embeddings = self.embedder.embed_batch(chunk_texts, show_progress=False)
+            logger.debug(f"Generated {len(embeddings)} embeddings with dimension {embeddings.shape[1] if len(embeddings.shape) > 1 else 'N/A'}")
+
+            # Add chunks with pre-computed embeddings to vector store
+            self.vector_store.add_chunks(collection_name, final_chunks, embeddings=embeddings)
 
             # Update file tracking in metadata DB
             file_hash = self._compute_file_hash(file_path)

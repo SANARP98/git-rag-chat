@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 class VectorStore:
     """Interface to ChromaDB for storing and retrieving code embeddings."""
 
-    def __init__(self, host: str = "chromadb", port: int = 8000, embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, host: str = "chromadb", port: int = 8000, embedding_model: Optional[str] = None):
         """Initialize ChromaDB client.
 
         Args:
             host: ChromaDB host
             port: ChromaDB port
-            embedding_model: Sentence transformer model name
+            embedding_model: Sentence transformer model name (optional, for backward compatibility)
         """
         self.host = host
         self.port = port
@@ -41,11 +41,16 @@ class VectorStore:
             logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
 
-        # Initialize embedding function
-        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=embedding_model
-        )
-        logger.info(f"Initialized embedding function: {embedding_model}")
+        # Initialize embedding function (optional - for backward compatibility)
+        # When embeddings are pre-computed, this won't be used
+        self.embedding_function = None
+        if embedding_model:
+            self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=embedding_model
+            )
+            logger.info(f"Initialized embedding function: {embedding_model}")
+        else:
+            logger.info("No embedding function initialized - will use pre-computed embeddings")
 
     def create_collection(self, collection_name: str, metadata: Optional[Dict[str, Any]] = None) -> Any:
         """Create or get a ChromaDB collection.
@@ -93,6 +98,7 @@ class VectorStore:
         self,
         collection_name: str,
         chunks: List[Dict[str, Any]],
+        embeddings: Optional[Any] = None,
         batch_size: int = 100
     ) -> int:
         """Add code chunks to a collection with embeddings.
@@ -100,6 +106,7 @@ class VectorStore:
         Args:
             collection_name: Name of the collection
             chunks: List of chunk dictionaries with 'code' and metadata
+            embeddings: Pre-computed embeddings (numpy array or list), optional
             batch_size: Number of chunks to process at once
 
         Returns:
@@ -128,6 +135,7 @@ class VectorStore:
 
                 # Metadata (excluding the code itself to avoid duplication)
                 metadata = {
+                    # Phase 1: Basic metadata
                     'file_path': chunk.get('file_path', ''),
                     'chunk_type': chunk.get('chunk_type', 'unknown'),
                     'name': chunk.get('name', 'unknown'),
@@ -142,20 +150,64 @@ class VectorStore:
                     'is_partial': chunk.get('is_partial', False),
                     'part_number': chunk.get('part_number', 0),
                     'parent_chunk': chunk.get('parent_chunk', ''),
+
+                    # Phase 2: Enhanced metadata - Signatures
+                    'signature': chunk.get('signature', ''),
+                    'signature_params': chunk.get('signature_params', ''),
+                    'signature_return': chunk.get('signature_return', ''),
+                    'param_count': chunk.get('param_count', 0),
+                    'parent_signature': chunk.get('parent_signature', ''),
+
+                    # Phase 2: Enhanced metadata - Decorators
+                    'decorators': ','.join(chunk.get('decorators', [])),
+
+                    # Phase 2: Enhanced metadata - Docstrings
+                    'docstring': chunk.get('docstring', ''),
+                    'docstring_full': chunk.get('docstring_full', '')[:500],  # Truncated to 500 chars
+                    'has_docstring': chunk.get('has_docstring', False),
+
+                    # Phase 2: Enhanced metadata - Imports
+                    'imports': ','.join(chunk.get('imports', []))[:500],  # Truncated to 500 chars
+
+                    # Phase 2: Enhanced metadata - Complexity
+                    'complexity_estimate': chunk.get('complexity_estimate', 0),
+                    'loc': chunk.get('loc', 0),
+
+                    # Phase 2: Enhanced metadata - Function classification
+                    'is_public': chunk.get('is_public', True),
+                    'is_property': chunk.get('is_property', False),
+                    'is_async': chunk.get('is_async', False),
                 }
 
                 # Convert all values to strings (ChromaDB metadata requirement)
                 metadatas.append({k: str(v) for k, v in metadata.items()})
 
             try:
-                # Add batch to collection
-                collection.add(
-                    ids=ids,
-                    documents=documents,
-                    metadatas=metadatas
-                )
+                # Prepare batch embeddings if provided
+                batch_embeddings = None
+                if embeddings is not None:
+                    # Extract embeddings for this batch
+                    batch_embeddings = embeddings[i:i + batch_size].tolist()
+
+                # Add batch to collection with pre-computed embeddings or let ChromaDB compute them
+                if batch_embeddings is not None:
+                    collection.add(
+                        ids=ids,
+                        documents=documents,
+                        metadatas=metadatas,
+                        embeddings=batch_embeddings
+                    )
+                    logger.info(f"Added batch {i // batch_size + 1}: {len(batch)} chunks with pre-computed embeddings to {collection_name}")
+                else:
+                    # Fallback to ChromaDB's embedding function (backward compatibility)
+                    collection.add(
+                        ids=ids,
+                        documents=documents,
+                        metadatas=metadatas
+                    )
+                    logger.info(f"Added batch {i // batch_size + 1}: {len(batch)} chunks (embeddings computed by ChromaDB) to {collection_name}")
+
                 total_added += len(batch)
-                logger.info(f"Added batch {i // batch_size + 1}: {len(batch)} chunks to {collection_name}")
 
             except Exception as e:
                 logger.error(f"Failed to add batch to {collection_name}: {e}")

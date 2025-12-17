@@ -25,9 +25,9 @@ services:
     volumes:
       - ./data/metadata:/app/data/metadata
       - ./data/models:/app/data/models
-      - ${REPO_MOUNT_PATH:-/tmp}:/repos:ro  # Mount Git repo read-only
-      - /Users/sana/Documents:/host/Documents:ro  # Mount entire Documents folder (optional)
-      - /Users/sana/.codex:/root/.codex  # Mount Codex CLI config
+      - /tmp:/repos:ro
+      - C:/Users/prenganathan:/host/Documents:ro
+      - C:/Users/prenganathan/.codex:/root/.codex
     environment:
       - CHROMA_HOST=${CHROMA_HOST:-chromadb}
       - CHROMA_PORT=${CHROMA_PORT:-8000}
@@ -36,6 +36,9 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-coder:33b}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-local}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - METADATA_DB_PATH=${METADATA_DB_PATH:-/app/data/metadata/repos.db}
     depends_on:
@@ -50,7 +53,7 @@ services:
       dockerfile: Dockerfile
     container_name: git-rag-watcher
     volumes:
-      - ${REPO_MOUNT_PATH:-/tmp}:/repos
+      - /tmp:/repos
     environment:
       - REPO_PATH=/repos
       - REPO_ID=${REPO_ID:-}

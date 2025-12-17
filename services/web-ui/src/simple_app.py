@@ -25,8 +25,8 @@ GRADIO_SERVER_PORT = int(os.getenv('GRADIO_SERVER_PORT', '7860'))
 client = httpx.Client(timeout=60.0)
 
 
-def add_repository(repo_path: str):
-    """Add a repository to the system."""
+def add_repository(repo_path: str, emb_provider: str, emb_model: str):
+    """Add a repository to the system with embedding selection."""
     try:
         if not repo_path.strip():
             return "❌ Error: Please enter a repository path"
@@ -43,20 +43,35 @@ def add_repository(repo_path: str):
 
         if response.status_code == 200:
             data = response.json()
-            repo_id = data.get('repo_id', 'unknown')
+            repo_id = data.get('id', data.get('repo_id', 'unknown'))
 
-            # Step 2: Trigger indexing
-            logger.info(f"Triggering indexing for repo {repo_id}")
+            # Step 2: Trigger indexing WITH embedding choice
+            logger.info(f"Triggering indexing for repo {repo_id} with {emb_provider}/{emb_model}")
+            index_payload = {"force_reindex": False, "embedding_provider": emb_provider}
+
+            # Only send embedding_model if it's not the default
+            if emb_model not in ["sentence-transformers/all-MiniLM-L6-v2", ""]:
+                index_payload["embedding_model"] = emb_model
+
             index_response = client.post(
                 f"{RAG_API_URL}/api/repos/{repo_id}/index",
-                json={"force_reindex": False}
+                json=index_payload
             )
 
             if index_response.status_code == 200:
                 index_data = index_response.json()
                 indexed_files = index_data.get('indexed_files', 0)
                 total_chunks = index_data.get('total_chunks', 0)
-                return f"✅ Repository '{repo_name}' added and indexed!\n\nRepo ID: {repo_id}\nFiles indexed: {indexed_files}\nChunks created: {total_chunks}"
+                emb_info = f"{index_data.get('embedding_provider', 'unknown')}/{index_data.get('embedding_model', 'unknown')}"
+                emb_dim = index_data.get('embedding_dimension', 'unknown')
+
+                return f"""✅ Repository '{repo_name}' added and indexed!
+
+**Repo ID:** {repo_id}
+**Files indexed:** {indexed_files}
+**Chunks created:** {total_chunks}
+**Embedding:** {emb_info} ({emb_dim} dimensions)
+"""
             else:
                 # Repository added but indexing failed
                 return f"⚠️ Repository '{repo_name}' added (ID: {repo_id}) but indexing failed.\n\nError: {index_response.status_code}\n{index_response.text}"
@@ -70,7 +85,7 @@ def add_repository(repo_path: str):
 
 
 def list_repositories():
-    """List all repositories."""
+    """List all repositories with embedding info."""
     try:
         response = client.get(f"{RAG_API_URL}/api/repos")
         if response.status_code == 200:
@@ -84,8 +99,15 @@ def list_repositories():
                 status = "🟢" if repo.get('is_active') else "⚪"
                 repo_id = repo.get('id', '')
                 repo_name = repo.get('name', 'Unknown')
+
+                # Show embedding info
+                emb_provider = repo.get('embedding_provider', 'unknown')
+                emb_model = repo.get('embedding_model', 'unknown')
+                emb_dim = repo.get('embedding_dimension', 'unknown')
+
                 output += f"{status} **{repo_name}** - `{repo.get('path')}`\n"
                 output += f"   Files: {repo.get('total_files', 0)} | Chunks: {repo.get('total_chunks', 0)}\n"
+                output += f"   Embedding: {emb_provider}/{emb_model} ({emb_dim}D)\n"
                 output += f"   ID: `{repo_id}`\n\n"
 
                 # Add to dropdown choices: display name + ID for selection
@@ -99,8 +121,8 @@ def list_repositories():
         return f"Error: {str(e)}", []
 
 
-def reindex_repository(repo_selection: str):
-    """Re-index an existing repository."""
+def reindex_repository(repo_selection: str, emb_provider: str, emb_model: str):
+    """Re-index an existing repository with embedding choice."""
     try:
         if not repo_selection:
             return "❌ Please select a repository to re-index"
@@ -108,17 +130,31 @@ def reindex_repository(repo_selection: str):
         # Extract repo_id from selection (format: "name (repo_id)")
         repo_id = repo_selection.split('(')[-1].rstrip(')')
 
-        logger.info(f"Re-indexing repository {repo_id}")
+        logger.info(f"Re-indexing repository {repo_id} with {emb_provider}/{emb_model}")
+        index_payload = {"force_reindex": True, "embedding_provider": emb_provider}
+
+        # Only send embedding_model if it's not the default
+        if emb_model not in ["sentence-transformers/all-MiniLM-L6-v2", ""]:
+            index_payload["embedding_model"] = emb_model
+
         response = client.post(
             f"{RAG_API_URL}/api/repos/{repo_id}/index",
-            json={"force_reindex": True}
+            json=index_payload
         )
 
         if response.status_code == 200:
             data = response.json()
             indexed_files = data.get('indexed_files', 0)
             total_chunks = data.get('total_chunks', 0)
-            return f"✅ Repository re-indexed successfully!\n\nFiles indexed: {indexed_files}\nChunks created: {total_chunks}"
+            emb_info = f"{data.get('embedding_provider', 'unknown')}/{data.get('embedding_model', 'unknown')}"
+            emb_dim = data.get('embedding_dimension', 'unknown')
+
+            return f"""✅ Repository re-indexed successfully!
+
+**Files indexed:** {indexed_files}
+**Chunks created:** {total_chunks}
+**Embedding:** {emb_info} ({emb_dim} dimensions)
+"""
         else:
             return f"❌ Re-indexing failed: {response.status_code}\n{response.text}"
 
@@ -233,6 +269,35 @@ with demo:
 
     gr.Markdown("## 📁 Repository Management")
 
+    with gr.Accordion("⚙️ Advanced Indexing Options", open=False):
+        gr.Markdown("### Embedding Model Selection")
+        embedding_provider = gr.Radio(
+            choices=["local", "openai"],
+            value="local",
+            label="Embedding Provider",
+            info="Local: Fast, free, offline (384-dim) | OpenAI: High quality, API cost (3072-dim)"
+        )
+
+        embedding_model = gr.Dropdown(
+            choices=[
+                "sentence-transformers/all-MiniLM-L6-v2",
+                "sentence-transformers/all-mpnet-base-v2",
+                "text-embedding-3-small",
+                "text-embedding-3-large"
+            ],
+            value="sentence-transformers/all-MiniLM-L6-v2",
+            label="Specific Model (Optional)",
+            info="Leave default or choose a specific model"
+        )
+
+        gr.Markdown("""
+**Model Comparison:**
+- `all-MiniLM-L6-v2`: Fast, 384-dim, free, good for most use cases
+- `all-mpnet-base-v2`: Better quality, 768-dim, free, slower
+- `text-embedding-3-small`: OpenAI, 1536-dim, $0.02/1M tokens
+- `text-embedding-3-large`: OpenAI, 3072-dim, $0.13/1M tokens (best quality)
+        """)
+
     repo_path_input = gr.Textbox(
         label="Repository Path (Container Path)",
         placeholder="/repos  or  /host/Documents/your-repo-name",
@@ -276,9 +341,9 @@ with demo:
     submit.click(respond, [msg, chatbot], [chatbot, msg])
     msg.submit(respond, [msg, chatbot], [chatbot, msg])
     clear.click(lambda: [], None, chatbot)
-    add_btn.click(add_repository, [repo_path_input], [add_status])
+    add_btn.click(add_repository, [repo_path_input, embedding_provider, embedding_model], [add_status])
     refresh_btn.click(refresh_repos, outputs=[repos_list, repo_dropdown])
-    reindex_btn.click(reindex_repository, [repo_dropdown], [manage_status])
+    reindex_btn.click(reindex_repository, [repo_dropdown, embedding_provider, embedding_model], [manage_status])
     delete_btn.click(delete_repository, [repo_dropdown], [manage_status])
     check_codex_btn.click(check_codex_status, outputs=[codex_status_display])
 

@@ -40,10 +40,13 @@ def get_db() -> MetadataDB:
 def get_vector_store() -> VectorStore:
     """Get vector store instance."""
     settings = get_settings()
+    # Don't pass embedding_model when using OpenAI or other pre-computed embeddings
+    # ChromaDB's SentenceTransformer function is only needed for local embeddings
+    embedding_model = None if settings.embedding_provider == "openai" else settings.embedding_model
     return VectorStore(
         host=settings.chroma_host,
         port=settings.chroma_port,
-        embedding_model=settings.embedding_model
+        embedding_model=embedding_model
     )
 
 
@@ -478,17 +481,20 @@ async def query(
 
         logger.info(f"Creating query embedder: {embedding_provider}/{embedding_model}")
 
+        # Always use OpenAI embeddings (local embeddings no longer supported)
+        if embedding_provider == "local":
+            logger.warning(f"Repository was indexed with 'local' embeddings, but only 'openai' is supported now. Falling back to OpenAI.")
+            embedding_provider = "openai"
+
         if embedding_provider == "openai":
             embedder = create_embedder(
                 provider="openai",
-                model_name=embedding_model or settings.openai_embedding_model,
+                model_name=embedding_model if embedding_provider == "openai" else settings.openai_embedding_model,
                 api_key=settings.openai_api_key
             )
         else:
-            embedder = create_embedder(
-                provider="local",
-                model_name=embedding_model or settings.embedding_model
-            )
+            # This shouldn't happen anymore, but just in case
+            raise ValueError(f"Unsupported embedding provider: {embedding_provider}. Only 'openai' is supported.")
 
         # Create retriever with matching embedder
         retriever = CodeRetriever(
@@ -696,17 +702,20 @@ async def query_stream(
         embedding_provider = repo.get('embedding_provider', 'local')
         embedding_model = repo.get('embedding_model')
 
+        # Always use OpenAI embeddings (local embeddings no longer supported)
+        if embedding_provider == "local":
+            logger.warning(f"Repository was indexed with 'local' embeddings, but only 'openai' is supported now. Falling back to OpenAI.")
+            embedding_provider = "openai"
+
         if embedding_provider == "openai":
             embedder = create_embedder(
                 provider="openai",
-                model_name=embedding_model or settings.openai_embedding_model,
+                model_name=embedding_model if embedding_provider == "openai" else settings.openai_embedding_model,
                 api_key=settings.openai_api_key
             )
         else:
-            embedder = create_embedder(
-                provider="local",
-                model_name=embedding_model or settings.embedding_model
-            )
+            # This shouldn't happen anymore, but just in case
+            raise ValueError(f"Unsupported embedding provider: {embedding_provider}. Only 'openai' is supported.")
 
         # Create retriever with matching embedder
         retriever = CodeRetriever(

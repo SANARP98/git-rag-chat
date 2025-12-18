@@ -153,7 +153,7 @@ class CodexCLIProvider(LLMProvider):
                 stderr=asyncio.subprocess.PIPE
             )
 
-            # Read output line by line
+            # Read output line by line and stream all relevant content
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -161,22 +161,49 @@ class CodexCLIProvider(LLMProvider):
 
                 try:
                     event = json.loads(line.decode('utf-8'))
+                    event_type = event.get('type', '')
 
-                    # Handle different event types
-                    if event.get('type') == 'message_delta':
-                        delta = event.get('data', {}).get('delta', '')
+                    # Handle item.created events with text deltas
+                    if event_type == 'item.created':
+                        item = event.get('item', {})
+                        item_type = item.get('type', '')
+
+                        # Stream thinking steps (optional - comment out if too verbose)
+                        if item_type == 'agent_thinking':
+                            thinking = item.get('text', '')
+                            if thinking:
+                                yield f"\n[Thinking] {thinking}\n\n"
+
+                        # Stream agent messages
+                        elif item_type == 'agent_message':
+                            text = item.get('text', '')
+                            if text:
+                                yield text
+
+                    # Handle text deltas (for streaming responses)
+                    elif event_type == 'item.text.delta':
+                        delta = event.get('delta', '')
                         if delta:
                             yield delta
 
-                    elif event.get('type') == 'turn_completed':
-                        # Final message
-                        message = event.get('data', {}).get('message', '')
-                        if message:
-                            yield message
+                    # Handle completed items
+                    elif event_type == 'item.completed':
+                        item = event.get('item', {})
+                        item_type = item.get('type', '')
+
+                        # If we haven't streamed the message yet, send it now
+                        if item_type == 'agent_message':
+                            text = item.get('text', '')
+                            if text:
+                                yield text
+
+                    # Turn completed - end of response
+                    elif event_type == 'turn.completed':
                         break
 
-                    elif event.get('type') == 'error':
-                        error_msg = event.get('data', {}).get('message', 'Unknown error')
+                    # Handle errors
+                    elif event_type == 'error':
+                        error_msg = event.get('message', 'Unknown error')
                         raise LLMConnectionError(f"Codex error: {error_msg}")
 
                 except json.JSONDecodeError:
@@ -241,17 +268,19 @@ class CodexCLIProvider(LLMProvider):
         async for chunk in self.generate_stream(prompt, temperature, max_tokens, **kwargs):
             yield chunk
 
-    def _parse_jsonl_output(self, output: str) -> str:
+    def _parse_jsonl_output(self, output: str, include_all_output: bool = False) -> str:
         """Parse JSONL output from Codex CLI.
 
         Args:
             output: JSONL output string
+            include_all_output: If True, include thinking and all agent messages
 
         Returns:
-            Final response text
+            Final response text or full output
         """
         lines = output.strip().split('\n')
         response_text = ""
+        all_messages = []
 
         for line in lines:
             if not line.strip():
@@ -264,9 +293,19 @@ class CodexCLIProvider(LLMProvider):
                 # Look for completed items with agent_message
                 if event_type == 'item.completed':
                     item = event.get('item', {})
-                    if item.get('type') == 'agent_message':
+                    item_type = item.get('type', '')
+
+                    # Capture agent messages (main response)
+                    if item_type == 'agent_message':
                         response_text = item.get('text', '')
-                        # Don't break - keep looking for later messages
+                        if include_all_output:
+                            all_messages.append(f"[Response]\n{response_text}")
+
+                    # Optionally capture thinking steps for debugging/transparency
+                    elif item_type == 'agent_thinking' and include_all_output:
+                        thinking = item.get('text', '')
+                        if thinking:
+                            all_messages.append(f"[Thinking]\n{thinking}")
 
                 # Also look for turn.completed
                 elif event_type == 'turn.completed':
@@ -276,6 +315,9 @@ class CodexCLIProvider(LLMProvider):
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse JSONL line: {line}")
                 continue
+
+        if include_all_output and all_messages:
+            return "\n\n".join(all_messages)
 
         if not response_text:
             logger.warning("No response found in Codex output")

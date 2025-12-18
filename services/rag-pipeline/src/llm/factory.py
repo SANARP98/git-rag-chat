@@ -64,7 +64,7 @@ class LLMFactory:
         if provider_type == 'codex':
             config = {
                 'profile': settings.codex_profile,
-                'timeout': 60
+                'timeout': 180  # Increased to 3 minutes for complex queries with large context
             }
         elif provider_type == 'ollama':
             config = {

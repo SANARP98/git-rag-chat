@@ -4,14 +4,15 @@ uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Database - ChromaDB with minimal dependencies
+# Database
 chromadb==0.4.24
 
 # Git operations
 GitPython==3.1.40
 
-# OpenAI for embeddings (lightweight, no PyTorch needed)
-openai>=1.40.0
+# Minimal ML (CPU-only, much lighter)
+# Instead of sentence-transformers with PyTorch, use lighter alternatives
+openai>=1.40.0  # For OpenAI embeddings (no heavy deps)
 
 # Code parsing
 tree-sitter>=0.20.0
@@ -22,4 +23,3 @@ httpx==0.25.2
 
 # Utilities
 python-dotenv==1.0.0
-numpy>=1.24.0,<2.0.0  # Still needed by ChromaDB but much lighter than PyTorch

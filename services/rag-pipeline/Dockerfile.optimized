@@ -1,0 +1,40 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install minimal system dependencies in a single layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Codex CLI globally (if really needed, otherwise remove)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @openai/codex \
+    && apt-get remove -y curl \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm cache clean --force
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies with CPU-only PyTorch to save ~3GB
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && rm -rf /root/.cache/pip
+
+# Copy application code
+COPY src/ ./src/
+
+# Create data directories
+RUN mkdir -p /app/data/metadata /app/data/models
+
+# Expose port
+EXPOSE 8001
+
+# Run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]

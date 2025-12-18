@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 RAG_API_URL = os.getenv('RAG_API_URL', 'http://rag-pipeline:8001')
 GRADIO_SERVER_PORT = int(os.getenv('GRADIO_SERVER_PORT', '7860'))
 
-# Simple HTTP client
-client = httpx.Client(timeout=60.0)
+# Simple HTTP client with extended timeout for large repository indexing
+client = httpx.Client(timeout=600.0)
 
 
 def add_repository(repo_path: str, emb_provider: str, emb_model: str):
@@ -163,6 +163,28 @@ def reindex_repository(repo_selection: str, emb_provider: str, emb_model: str):
         return f"❌ Error: {str(e)}"
 
 
+def activate_repository(repo_selection: str):
+    """Activate a repository to use it for queries."""
+    try:
+        if not repo_selection:
+            return "❌ Please select a repository to activate"
+
+        # Extract repo_id from selection
+        repo_id = repo_selection.split('(')[-1].rstrip(')')
+
+        logger.info(f"Activating repository {repo_id}")
+        response = client.put(f"{RAG_API_URL}/api/repos/{repo_id}/activate")
+
+        if response.status_code == 200:
+            return f"✅ Repository activated successfully! You can now query this repository."
+        else:
+            return f"❌ Activation failed: {response.status_code}\n{response.text}"
+
+    except Exception as e:
+        logger.error(f"Error activating repository: {e}")
+        return f"❌ Error: {str(e)}"
+
+
 def delete_repository(repo_selection: str):
     """Delete a repository."""
     try:
@@ -272,30 +294,26 @@ with demo:
     with gr.Accordion("⚙️ Advanced Indexing Options", open=False):
         gr.Markdown("### Embedding Model Selection")
         embedding_provider = gr.Radio(
-            choices=["local", "openai"],
-            value="local",
+            choices=["openai"],
+            value="openai",
             label="Embedding Provider",
-            info="Local: Fast, free, offline (384-dim) | OpenAI: High quality, API cost (3072-dim)"
+            info="OpenAI: High quality embeddings (1536-3072 dimensions) - requires API key"
         )
 
         embedding_model = gr.Dropdown(
             choices=[
-                "sentence-transformers/all-MiniLM-L6-v2",
-                "sentence-transformers/all-mpnet-base-v2",
                 "text-embedding-3-small",
                 "text-embedding-3-large"
             ],
-            value="sentence-transformers/all-MiniLM-L6-v2",
-            label="Specific Model (Optional)",
-            info="Leave default or choose a specific model"
+            value="text-embedding-3-small",
+            label="OpenAI Embedding Model",
+            info="Choose the embedding model to use"
         )
 
         gr.Markdown("""
 **Model Comparison:**
-- `all-MiniLM-L6-v2`: Fast, 384-dim, free, good for most use cases
-- `all-mpnet-base-v2`: Better quality, 768-dim, free, slower
-- `text-embedding-3-small`: OpenAI, 1536-dim, $0.02/1M tokens
-- `text-embedding-3-large`: OpenAI, 3072-dim, $0.13/1M tokens (best quality)
+- `text-embedding-3-small`: 1536 dimensions, $0.02 per 1M tokens - Fast and cost-effective
+- `text-embedding-3-large`: 3072 dimensions, $0.13 per 1M tokens - Best quality
         """)
 
     repo_path_input = gr.Textbox(
@@ -319,7 +337,8 @@ with demo:
 
     with gr.Row():
         refresh_btn = gr.Button("Refresh List", variant="secondary")
-        reindex_btn = gr.Button("Re-Index Selected", variant="primary")
+        activate_btn = gr.Button("Activate Selected", variant="primary")
+        reindex_btn = gr.Button("Re-Index Selected")
         delete_btn = gr.Button("Delete Selected", variant="stop")
 
     manage_status = gr.Textbox(label="Management Status", lines=2, interactive=False)
@@ -343,6 +362,7 @@ with demo:
     clear.click(lambda: [], None, chatbot)
     add_btn.click(add_repository, [repo_path_input, embedding_provider, embedding_model], [add_status])
     refresh_btn.click(refresh_repos, outputs=[repos_list, repo_dropdown])
+    activate_btn.click(activate_repository, [repo_dropdown], [manage_status])
     reindex_btn.click(reindex_repository, [repo_dropdown, embedding_provider, embedding_model], [manage_status])
     delete_btn.click(delete_repository, [repo_dropdown], [manage_status])
     check_codex_btn.click(check_codex_status, outputs=[codex_status_display])

@@ -22,7 +22,8 @@ class RepositoryManager:
         """
         self.rag_api_url = rag_api_url
         self.allowed_paths = allowed_paths or []
-        self.http_client = httpx.Client(timeout=30.0)
+        # Increased timeout to 10 minutes for large repository indexing with OpenAI embeddings
+        self.http_client = httpx.Client(timeout=600.0)
         self.current_repo_id: Optional[str] = None
 
     def validate_path(self, repo_path: str) -> str:

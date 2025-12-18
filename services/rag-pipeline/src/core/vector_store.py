@@ -219,7 +219,8 @@ class VectorStore:
     def query(
         self,
         collection_name: str,
-        query_text: str,
+        query_text: Optional[str] = None,
+        query_embeddings: Optional[List[float]] = None,
         n_results: int = 10,
         where: Optional[Dict[str, Any]] = None,
         where_document: Optional[Dict[str, Any]] = None
@@ -228,7 +229,8 @@ class VectorStore:
 
         Args:
             collection_name: Name of the collection
-            query_text: Query text
+            query_text: Query text (used if embedding_function is set)
+            query_embeddings: Pre-computed query embeddings (optional)
             n_results: Number of results to return
             where: Metadata filter (e.g., {"language": "python"})
             where_document: Document content filter
@@ -242,13 +244,25 @@ class VectorStore:
                 embedding_function=self.embedding_function
             )
 
-            results = collection.query(
-                query_texts=[query_text],
-                n_results=n_results,
-                where=where,
-                where_document=where_document,
-                include=['documents', 'metadatas', 'distances']
-            )
+            # Use pre-computed embeddings if provided, otherwise use query_text
+            if query_embeddings is not None:
+                results = collection.query(
+                    query_embeddings=[query_embeddings],
+                    n_results=n_results,
+                    where=where,
+                    where_document=where_document,
+                    include=['documents', 'metadatas', 'distances']
+                )
+            elif query_text is not None:
+                results = collection.query(
+                    query_texts=[query_text],
+                    n_results=n_results,
+                    where=where,
+                    where_document=where_document,
+                    include=['documents', 'metadatas', 'distances']
+                )
+            else:
+                raise ValueError("Either query_text or query_embeddings must be provided")
 
             logger.info(f"Query returned {len(results['ids'][0])} results from {collection_name}")
             return results

@@ -1,4 +1,4 @@
-"""Embedding generation using sentence-transformers and OpenAI."""
+"""Embedding generation using OpenAI."""
 
 import logging
 import os
@@ -7,7 +7,6 @@ from typing import List, Optional
 from pathlib import Path
 from abc import ABC, abstractmethod
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import hashlib
 import pickle
@@ -106,118 +105,8 @@ class BaseEmbedder(ABC):
         return float(similarity)
 
 
-class LocalEmbedder(BaseEmbedder):
-    """Generate embeddings using local sentence-transformers."""
-
-    def __init__(
-        self,
-        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        cache_dir: Optional[str] = None,
-        device: Optional[str] = None
-    ):
-        """Initialize the embedding model.
-
-        Args:
-            model_name: Name of the sentence-transformers model
-            cache_dir: Directory to cache the model (optional)
-            device: Device to run model on ('cpu', 'cuda', etc.) (optional)
-        """
-        self.model_name = model_name
-        self.cache_dir = cache_dir or "/app/data/models"
-        self.device = device
-
-        logger.info(f"Loading local embedding model: {model_name}")
-
-        try:
-            # Ensure cache directory exists
-            Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
-
-            # Load model
-            self.model = SentenceTransformer(
-                model_name,
-                cache_folder=self.cache_dir,
-                device=device
-            )
-
-            # Get model info
-            self.embedding_dimension = self.model.get_sentence_embedding_dimension()
-            logger.info(f"Local model loaded successfully. Embedding dimension: {self.embedding_dimension}")
-
-        except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {e}")
-            raise
-
-    def embed_text(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text.
-
-        Args:
-            text: Text to embed
-
-        Returns:
-            Numpy array of embeddings
-        """
-        try:
-            embedding = self.model.encode(text, convert_to_numpy=True)
-            return embedding
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
-            raise
-
-    def embed_batch(
-        self,
-        texts: List[str],
-        batch_size: int = 32,
-        show_progress: bool = True
-    ) -> np.ndarray:
-        """Generate embeddings for a batch of texts.
-
-        Args:
-            texts: List of texts to embed
-            batch_size: Batch size for encoding
-            show_progress: Whether to show progress bar
-
-        Returns:
-            Numpy array of embeddings (n_texts x embedding_dim)
-        """
-        try:
-            logger.info(f"Generating embeddings for {len(texts)} texts")
-
-            embeddings = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=show_progress,
-                convert_to_numpy=True
-            )
-
-            logger.info(f"Generated {len(embeddings)} embeddings")
-            return embeddings
-
-        except Exception as e:
-            logger.error(f"Failed to generate batch embeddings: {e}")
-            raise
-
-    def get_embedding_dimension(self) -> int:
-        """Get the embedding dimension.
-
-        Returns:
-            Embedding dimension
-        """
-        return self.embedding_dimension
-
-    def get_model_info(self) -> dict:
-        """Get information about the loaded model.
-
-        Returns:
-            Dictionary with model information
-        """
-        return {
-            'provider': 'local',
-            'model_name': self.model_name,
-            'embedding_dimension': self.embedding_dimension,
-            'max_sequence_length': self.model.max_seq_length,
-            'device': str(self.model.device),
-            'cache_dir': self.cache_dir
-        }
+# LocalEmbedder class removed - using OpenAI embeddings only
+# If you need local embeddings, add sentence-transformers to requirements.txt
 
 
 class OpenAIEmbedder(BaseEmbedder):
@@ -357,14 +246,14 @@ class OpenAIEmbedder(BaseEmbedder):
 
 
 def create_embedder(
-    provider: str = "local",
+    provider: str = "openai",
     model_name: Optional[str] = None,
     **kwargs
 ) -> BaseEmbedder:
     """Factory function to create an embedder based on provider.
 
     Args:
-        provider: 'local' or 'openai'
+        provider: Only 'openai' is supported
         model_name: Model name (optional, uses defaults)
         **kwargs: Additional arguments for embedder
 
@@ -382,16 +271,8 @@ def create_embedder(
             model=model_name or default_model,
             **kwargs
         )
-    elif provider == "local":
-        default_model = "sentence-transformers/all-MiniLM-L6-v2"
-        # Filter out OpenAI-specific kwargs
-        local_kwargs = {k: v for k, v in kwargs.items() if k not in ['api_key']}
-        return LocalEmbedder(
-            model_name=model_name or default_model,
-            **local_kwargs
-        )
     else:
-        raise ValueError(f"Unknown provider: {provider}. Supported providers: 'local', 'openai'")
+        raise ValueError(f"Unknown provider: {provider}. Only 'openai' is supported. For local embeddings, add sentence-transformers to requirements.txt")
 
 
 # Utility functions for backward compatibility and caching
@@ -477,5 +358,5 @@ def preprocess_code(code: str, max_length: int = 512) -> str:
     return code
 
 
-# For backward compatibility
-Embedder = LocalEmbedder
+# For backward compatibility - use OpenAIEmbedder directly
+Embedder = OpenAIEmbedder

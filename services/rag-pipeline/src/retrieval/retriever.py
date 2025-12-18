@@ -52,10 +52,16 @@ class CodeRetriever:
         logger.info(f"Retrieving {n_results} chunks for query: {query[:100]}")
 
         try:
-            # Query vector store
+            # Generate query embedding
+            query_embedding = self.embedder.embed_text(query)
+
+            # Convert numpy array to list for ChromaDB
+            query_embedding_list = query_embedding.tolist() if hasattr(query_embedding, 'tolist') else list(query_embedding)
+
+            # Query vector store with pre-computed embedding
             results = self.vector_store.query(
                 collection_name=collection_name,
-                query_text=query,
+                query_embeddings=query_embedding_list,
                 n_results=n_results,
                 where=filters
             )

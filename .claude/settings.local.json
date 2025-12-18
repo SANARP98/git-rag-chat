@@ -21,7 +21,8 @@
       "Bash(echo:*)",
       "Bash(python -m json.tool:*)",
       "Bash(docker-compose logs:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File:*)"
     ],
     "deny": [],
     "ask": []

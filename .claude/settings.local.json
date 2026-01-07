@@ -22,7 +22,10 @@
       "Bash(python -m json.tool:*)",
       "Bash(docker-compose logs:*)",
       "Bash(findstr:*)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File:*)"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File:*)",
+      "Bash(timeout 10 docker run:*)",
+      "Bash(timeout 15 docker run:*)",
+      "Bash(docker run:*)"
     ],
     "deny": [],
     "ask": []

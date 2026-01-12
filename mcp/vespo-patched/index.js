@@ -221,14 +221,22 @@ class ChromaContextMCP {
 
             // Store locally first
             const localColl = await localClient.getOrCreateCollection({ name: collection });
+
+            // Clean metadata - remove null/undefined values (ChromaDB requirement)
+            const cleanMetadata = {
+              ...metadata,
+              stored_at: new Date().toISOString()
+            };
+
+            // Only add environment if it's not null
+            if (this.currentEnvironment !== null && this.currentEnvironment !== undefined) {
+              cleanMetadata.environment = this.currentEnvironment;
+            }
+
             await localColl.add({
               ids: [docId],
               documents: [content],
-              metadatas: [{
-                ...metadata,
-                stored_at: new Date().toISOString(),
-                environment: this.currentEnvironment
-              }]
+              metadatas: [cleanMetadata]
             });
 
             return {

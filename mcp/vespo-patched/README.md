@@ -73,14 +73,26 @@ The original vespo92 server is feature-rich with 22 advanced tools, but had **MC
 ### Prerequisites
 - [Docker Desktop](https://docker.com) (running)
 - [Codex CLI](https://github.com/anthropics/claude-code) installed
-- Windows PowerShell (for setup script)
+- macOS Bash or Windows PowerShell (for setup script)
 
 ### Installation
 
+#### macOS/Linux
+
 1. **Run the setup script:**
+
+   ```bash
+   cd mcp/vespo-patched
+   ./setup-codex-vespo-mac.sh
+   ```
+
+#### Windows
+
+1. **Run the setup script:**
+
    ```powershell
    cd mcp\vespo-patched
-   .\setup-codex-vespo.ps1
+   .\setup-codex-vespo-improved.ps1
    ```
 
 2. **Follow the prompts:**
@@ -88,6 +100,7 @@ The original vespo92 server is feature-rich with 22 advanced tools, but had **MC
    - Script will:
      - Start ChromaDB (Docker)
      - Build the patched MCP server
+     - Create dynamic workspace wrapper
      - Configure Codex CLI
      - Test the handshake
 
@@ -101,6 +114,45 @@ The original vespo92 server is feature-rich with 22 advanced tools, but had **MC
    You: Search for authentication in temp_repo
    You: Unload collection temp_repo
    ```
+
+---
+
+## 🎯 Dynamic Workspace Mounting
+
+**New Feature!** The setup scripts now automatically configure dynamic workspace mounting, which means:
+
+✅ **No reconfiguration needed** when switching VS Code workspaces
+✅ **Automatic detection** of your current project directory
+✅ **Works across multiple projects** seamlessly
+
+### How It Works
+
+The setup script creates a Docker wrapper that:
+
+1. Receives your current directory from VS Code via the `PWD` environment variable
+2. Dynamically injects it as a volume mount when starting the MCP server
+3. Makes `/workspace` always point to your current VS Code workspace
+
+### Testing It
+
+Open different projects in VS Code and try:
+
+```text
+# In Project A
+You: Scan directory /workspace
+# Shows files from Project A
+
+# Close VS Code, open Project B
+You: Scan directory /workspace
+# Shows files from Project B - automatically!
+```
+
+### Wrapper Script Locations
+
+- **macOS**: `~/.codex/docker-wrapper.sh`
+- **Windows**: `%USERPROFILE%\.codex\docker-wrapper.ps1`
+
+These are created automatically by the setup script and require no manual intervention.
 
 ---
 

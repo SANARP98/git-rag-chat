@@ -298,16 +298,99 @@ else {
     Write-Warning "Continuing anyway, but there may be issues..."
 }
 
-# --- Step 10: Update Codex Config ---
-Write-Step "[10/12] Updating Codex CLI configuration..."
+# --- Step 9a: Create Docker Wrapper Script ---
+Write-Step "[9a/12] Creating Docker wrapper for dynamic workspace mounting..."
 
 $codexDir = Join-Path $env:USERPROFILE ".codex"
-$configPath = Join-Path $codexDir "config.toml"
+$wrapperScript = Join-Path $codexDir "docker-wrapper.ps1"
 
 if (-not (Test-Path $codexDir)) {
     New-Item -ItemType Directory -Path $codexDir | Out-Null
     Write-Info "Created .codex directory"
 }
+
+$wrapperContent = @'
+# Docker wrapper for dynamic workspace mounting in Codex MCP
+# Automatically mounts current VS Code workspace as /workspace
+
+param(
+    [Parameter(ValueFromRemainingArguments)]
+    [string[]]$DockerArgs
+)
+
+$ErrorActionPreference = "Stop"
+
+# Get current directory from environment
+$WorkspaceDir = $env:PWD
+if (-not $WorkspaceDir) {
+    $WorkspaceDir = (Get-Location).Path
+}
+
+# Convert Windows path to Docker path format
+function ConvertTo-DockerPath {
+    param([string]$Path)
+    try {
+        $fullPath = (Resolve-Path $Path -ErrorAction Stop).Path
+        $drive = $fullPath.Substring(0, 1).ToLower()
+        $restPath = $fullPath.Substring(2) -replace "\\", "/"
+        return "/$drive$restPath"
+    } catch {
+        Write-Error "Failed to resolve path: $Path"
+        exit 1
+    }
+}
+
+$DockerPath = ConvertTo-DockerPath -Path $WorkspaceDir
+
+# Find Docker binary
+$DockerBin = $null
+if (Test-Path "C:\Program Files\Docker\Docker\resources\bin\docker.exe") {
+    $DockerBin = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+} elseif (Get-Command docker -ErrorAction SilentlyContinue) {
+    $DockerBin = (Get-Command docker).Source
+} else {
+    Write-Error "Docker command not found"
+    exit 1
+}
+
+# Parse and modify args
+$ModifiedArgs = @()
+$SkipNext = $false
+
+for ($i = 0; $i -lt $DockerArgs.Count; $i++) {
+    $arg = $DockerArgs[$i]
+
+    if ($SkipNext) {
+        # Replace mount path with current workspace
+        $ModifiedArgs += "${DockerPath}:/workspace:ro"
+        $SkipNext = $false
+    }
+    elseif ($arg -eq "-v") {
+        $ModifiedArgs += $arg
+        $SkipNext = $true
+    }
+    elseif ($arg -like "*:/workspace:ro" -or $arg -like "*://workspace:ro") {
+        # Replace inline mount (handle both : and :: formats)
+        $ModifiedArgs += "${DockerPath}:/workspace:ro"
+    }
+    else {
+        $ModifiedArgs += $arg
+    }
+}
+
+# Execute real docker
+& $DockerBin @ModifiedArgs
+exit $LASTEXITCODE
+'@
+
+Set-Content -Path $wrapperScript -Value $wrapperContent -Encoding UTF8
+Write-Success "Docker wrapper created: $wrapperScript"
+Write-Info "Wrapper will dynamically mount current workspace"
+
+# --- Step 10: Update Codex Config ---
+Write-Step "[10/12] Updating Codex CLI configuration..."
+
+$configPath = Join-Path $codexDir "config.toml"
 
 # Read existing config or create new
 $configContent = ""
@@ -320,24 +403,26 @@ if (Test-Path $configPath) {
 $configContent = [regex]::Replace($configContent, "(?ms)^\[mcp_servers\.chromadb_context_vespo\].*?(?=^\[|\z)", "")
 $configContent = $configContent.TrimEnd()
 
-# Convert Windows path to Docker path
-$dockerPath = ConvertTo-DockerPath -WindowsPath $repoPath
+# Escape backslashes in wrapper path for TOML
+$wrapperPathEscaped = $wrapperScript -replace '\\', '\\\\'
 
-# Build new config section with proper escaping
+# Build new config section with wrapper script
 $newSection = @"
 
 # Patched vespo92 ChromaDB MCP server (22 advanced tools + batch processing)
 # Auto-configured by setup script on $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+# Uses dynamic workspace mounting - automatically mounts current VS Code workspace
 [mcp_servers.chromadb_context_vespo]
-command = "docker"
+command = "$wrapperPathEscaped"
 args = [
   "run","--rm","-i",
   "--network","$networkName",
   "-e","CHROMA_URL=http://${containerName}:8000",
   "-e","CHROMADB_URL=http://${containerName}:8000",
-  "-v","${dockerPath}://workspace:ro",
+  "-v","PLACEHOLDER:/workspace:ro",
   "$imageName"
 ]
+env_vars = ["PWD"]
 startup_timeout_sec = 45
 tool_timeout_sec = 180
 enabled = true
@@ -378,6 +463,12 @@ Write-Info "Container:        $containerName"
 Write-Info "Network:          $networkName"
 Write-Info "MCP Server:       chromadb_context_vespo"
 Write-Info "Config File:      $configPath"
+Write-Info "Docker Wrapper:   $wrapperScript"
+
+Write-Host ""
+Write-Host "✓ Dynamic Workspace Mounting Enabled" -ForegroundColor Green
+Write-Info "The MCP server will automatically mount your current VS Code workspace"
+Write-Info "No reconfiguration needed when switching between projects!"
 
 Write-Host ""
 Write-Host "Next Steps:" -ForegroundColor Yellow

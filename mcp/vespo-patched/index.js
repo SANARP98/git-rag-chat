@@ -7,7 +7,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { ChromaClient } from 'chromadb';
-import { writeFile, readFile } from 'fs/promises';
+import { writeFile, readFile, readdir, stat } from 'fs/promises';
+import { join } from 'path';
 
 // Batch processing imports
 import {
@@ -26,20 +27,10 @@ import {
 import { extractExif, exifToSummary, exifToMetadata } from './exif-extractor.js';
 
 // Watch folder
-import {
-  startWatcher,
-  stopWatcher,
-  listWatchers,
-  getWatcherStatus
-} from './watch-folder.js';
+import { startWatcher, stopWatcher, listWatchers } from './watch-folder.js';
 
 // Duplicate detection
-import {
-  findDuplicates,
-  findCollectionDuplicates,
-  compareFiles,
-  generateReport
-} from './duplicate-detector.js';
+import { findDuplicates, findCollectionDuplicates, compareFiles } from './duplicate-detector.js';
 
 // CRITICAL: Disable all console.error logging to prevent stdio contamination
 // Only use this logger for debugging AFTER handshake (if ever)
@@ -48,6 +39,47 @@ function debugLog(...args) {
   if (DEBUG) {
     console.error('[MCP-DEBUG]', ...args);
   }
+}
+
+function cleanMetadata(metadata) {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([, value]) => value !== null && value !== undefined)
+  );
+}
+
+const WORKSPACE_ROOT = '/workspace';
+
+function isWorkspacePath(targetPath) {
+  return targetPath === WORKSPACE_ROOT || targetPath.startsWith(`${WORKSPACE_ROOT}/`);
+}
+
+async function getWorkspaceMountInfo() {
+  const info = {
+    workspacePath: WORKSPACE_ROOT,
+    hostWorkspace: process.env.PWD || null,
+    accessible: false,
+    entryCount: 0,
+    sampleEntries: [],
+    hasGit: null,
+    note: 'If you switched VS Code workspaces without restarting Codex, /workspace may still point to the previous repo.',
+  };
+
+  try {
+    const entries = await readdir(WORKSPACE_ROOT);
+    info.accessible = true;
+    info.entryCount = entries.length;
+    info.sampleEntries = entries.slice(0, 20);
+    try {
+      await stat(join(WORKSPACE_ROOT, '.git'));
+      info.hasGit = true;
+    } catch {
+      info.hasGit = false;
+    }
+  } catch (error) {
+    info.error = error.message;
+  }
+
+  return info;
 }
 
 class ChromaContextMCP {
@@ -110,8 +142,12 @@ class ChromaContextMCP {
         const envResult = await envCollection.get({ ids: [`env_${this.currentEnvironment}`] });
 
         if (envResult.metadatas && envResult.metadatas[0] && envResult.metadatas[0].chromadb_remote) {
-          this.remoteUrl = envResult.metadatas[0].chromadb_remote;
-          debugLog(`Remote ChromaDB: ${this.remoteUrl}`);
+          const nextRemoteUrl = envResult.metadatas[0].chromadb_remote;
+          if (this.remoteUrl !== nextRemoteUrl) {
+            this.remoteUrl = nextRemoteUrl;
+            this.remoteClient = null;
+            debugLog(`Remote ChromaDB: ${this.remoteUrl}`);
+          }
         }
       }
     } catch (error) {
@@ -125,6 +161,8 @@ class ChromaContextMCP {
     if (!this.routerEnabled) {
       return 'local';
     }
+
+    await this.getCurrentEnvironment();
 
     // Check if collection exists locally
     try {
@@ -147,7 +185,7 @@ class ChromaContextMCP {
     }
 
     // Default to remote if available
-    return this.remoteClient ? 'remote' : 'local';
+    return this.remoteUrl ? 'remote' : 'local';
   }
 
   async getClient(preferredRoute = null) {
@@ -160,7 +198,7 @@ class ChromaContextMCP {
       await this.getCurrentEnvironment();
     }
 
-    if (preferredRoute === 'remote' && this.remoteClient) {
+    if (preferredRoute === 'remote' && this.remoteUrl) {
       return this.getRemoteClient();
     }
 
@@ -187,6 +225,15 @@ class ChromaContextMCP {
               queryTexts: [query],
               nResults: limit
             });
+
+            if (!results.documents || !results.documents[0] || results.documents[0].length === 0) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify([], null, 2),
+                }],
+              };
+            }
 
             const formattedResults = results.documents[0].map((doc, idx) => ({
               content: doc,
@@ -216,6 +263,7 @@ class ChromaContextMCP {
           const { content, metadata = {}, collection = 'vinos_codebase', id } = args;
 
           try {
+            await this.getCurrentEnvironment();
             const localClient = await this.getLocalClient();
             const docId = id || `doc_${Date.now()}`;
 
@@ -223,20 +271,20 @@ class ChromaContextMCP {
             const localColl = await localClient.getOrCreateCollection({ name: collection });
 
             // Clean metadata - remove null/undefined values (ChromaDB requirement)
-            const cleanMetadata = {
+            const cleanedMetadata = cleanMetadata({
               ...metadata,
               stored_at: new Date().toISOString()
-            };
+            });
 
             // Only add environment if it's not null
             if (this.currentEnvironment !== null && this.currentEnvironment !== undefined) {
-              cleanMetadata.environment = this.currentEnvironment;
+              cleanedMetadata.environment = this.currentEnvironment;
             }
 
             await localColl.add({
               ids: [docId],
               documents: [content],
-              metadatas: [cleanMetadata]
+              metadatas: [cleanedMetadata]
             });
 
             return {
@@ -258,11 +306,12 @@ class ChromaContextMCP {
 
         case 'list_collections': {
           try {
+            await this.getCurrentEnvironment();
             const localClient = await this.getLocalClient();
             const localCollections = await localClient.listCollections();
 
             let remoteCollections = [];
-            if (this.remoteClient) {
+            if (this.remoteUrl) {
               try {
                 const remoteClient = await this.getRemoteClient();
                 remoteCollections = await remoteClient.listCollections();
@@ -299,6 +348,7 @@ class ChromaContextMCP {
           const { code, limit = 5 } = args;
 
           try {
+            await this.getCurrentEnvironment();
             let results = null;
             let source = 'local';
 
@@ -316,7 +366,7 @@ class ChromaContextMCP {
             }
 
             // If no results and remote available, try remote
-            if ((!results || results.documents[0].length === 0) && this.remoteClient) {
+            if ((!results || !results.documents || !results.documents[0] || results.documents[0].length === 0) && this.remoteUrl) {
               try {
                 const remoteClient = await this.getRemoteClient();
                 const remoteColl = await remoteClient.getCollection({ name: 'component_patterns' });
@@ -332,7 +382,7 @@ class ChromaContextMCP {
               }
             }
 
-            if (!results || !results.documents[0]) {
+            if (!results || !results.documents || !results.documents[0] || results.documents[0].length === 0) {
               return {
                 content: [{
                   type: 'text',
@@ -405,6 +455,7 @@ class ChromaContextMCP {
           } = args;
 
           try {
+            const workspaceInfo = isWorkspacePath(dirPath) ? await getWorkspaceMountInfo() : null;
             const files = await scanDirectory(dirPath, {
               recursive,
               categories: categories ? categories.split(',').map(c => c.trim()) : null,
@@ -414,16 +465,22 @@ class ChromaContextMCP {
 
             const stats = await getDirectoryStats(dirPath, { recursive, maxFiles: max_files });
 
+            const payload = {
+              directory: dirPath,
+              files_found: files.length,
+              stats,
+              sample_files: files.slice(0, 20),
+              has_more: files.length > 20
+            };
+
+            if (workspaceInfo) {
+              payload.workspace = workspaceInfo;
+            }
+
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify({
-                  directory: dirPath,
-                  files_found: files.length,
-                  stats,
-                  sample_files: files.slice(0, 20),
-                  has_more: files.length > 20
-                }, null, 2),
+                text: JSON.stringify(payload, null, 2),
               }],
             };
           } catch (error) {
@@ -449,6 +506,7 @@ class ChromaContextMCP {
           } = args;
 
           try {
+            const workspaceInfo = isWorkspacePath(dirPath) ? await getWorkspaceMountInfo() : null;
             debugLog(`Scanning ${dirPath}...`);
 
             // Scan for files
@@ -500,19 +558,25 @@ class ChromaContextMCP {
               debugLog(`Stored ${stored}/${results.length} documents`);
             }
 
+            const payload = {
+              success: true,
+              collection,
+              source_directory: dirPath,
+              files_found: files.length,
+              files_processed: stats.processed,
+              files_stored: stored,
+              errors: errors.length,
+              error_details: errors.slice(0, 10)
+            };
+
+            if (workspaceInfo) {
+              payload.workspace = workspaceInfo;
+            }
+
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  collection,
-                  source_directory: dirPath,
-                  files_found: files.length,
-                  files_processed: stats.processed,
-                  files_stored: stored,
-                  errors: errors.length,
-                  error_details: errors.slice(0, 10)
-                }, null, 2),
+                text: JSON.stringify(payload, null, 2),
               }],
             };
           } catch (error) {
@@ -536,6 +600,7 @@ class ChromaContextMCP {
           } = args;
 
           try {
+            const workspaceInfo = isWorkspacePath(dirPath) ? await getWorkspaceMountInfo() : null;
             // Create temp collection name
             const tempName = name || `temp_${Date.now()}`;
             debugLog(`Quick loading to collection: ${tempName}`);
@@ -585,16 +650,22 @@ class ChromaContextMCP {
               }
             }
 
+            const payload = {
+              success: true,
+              collection: tempName,
+              files_loaded: results.length,
+              source: dirPath,
+              tip: `Use 'search_context' with collection='${tempName}' to search. Use 'unload_collection' to remove when done.`
+            };
+
+            if (workspaceInfo) {
+              payload.workspace = workspaceInfo;
+            }
+
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  collection: tempName,
-                  files_loaded: results.length,
-                  source: dirPath,
-                  tip: `Use 'search_context' with collection='${tempName}' to search. Use 'unload_collection' to remove when done.`
-                }, null, 2),
+                text: JSON.stringify(payload, null, 2),
               }],
             };
           } catch (error) {
@@ -793,7 +864,7 @@ class ChromaContextMCP {
                   collection,
                   document_count: count,
                   sample_categories: categoryBreakdown,
-                  sample_documents: peek.ids.map((id, idx) => ({
+                  sample_documents: (peek.ids || []).map((id, idx) => ({
                     id,
                     metadata: peek.metadatas[idx],
                     content_preview: peek.documents[idx]?.slice(0, 200) + '...'
@@ -1112,7 +1183,6 @@ class ChromaContextMCP {
                 collection: {
                   type: 'string',
                   description: 'Collection to search (default: vinos_codebase)',
-                  enum: ['vinos_codebase', 'infrastructure_config', 'component_patterns', 'api_documentation', 'troubleshooting', 'vinos_environments', 'mcp_registry'],
                 },
                 limit: {
                   type: 'number',

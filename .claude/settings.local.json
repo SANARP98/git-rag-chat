@@ -25,7 +25,8 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -File:*)",
       "Bash(timeout 10 docker run:*)",
       "Bash(timeout 15 docker run:*)",
-      "Bash(docker run:*)"
+      "Bash(docker run:*)",
+      "Bash(node --version:*)"
     ],
     "deny": [],
     "ask": []
